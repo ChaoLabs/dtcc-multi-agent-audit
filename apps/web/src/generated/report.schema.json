@@ -1,0 +1,224 @@
+{
+  "$defs": {
+    "AuditInput": {
+      "additionalProperties": false,
+      "properties": {
+        "filename": {
+          "default": "Contract.sol",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\\.sol$",
+          "title": "Filename",
+          "type": "string"
+        },
+        "source": {
+          "maxLength": 48000,
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": ["filename", "source"],
+      "title": "AuditInput",
+      "type": "object"
+    },
+    "Candidate": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-f0-9]{24}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "rule_id": {
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "category": {
+          "title": "Category",
+          "type": "string"
+        },
+        "proposed_severity": {
+          "enum": ["HIGH", "MEDIUM", "LOW"],
+          "title": "Proposed Severity",
+          "type": "string"
+        },
+        "disposition": {
+          "const": "needs-review",
+          "default": "needs-review",
+          "title": "Disposition",
+          "type": "string"
+        },
+        "rationale": {
+          "title": "Rationale",
+          "type": "string"
+        },
+        "recommendation": {
+          "title": "Recommendation",
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        },
+        "origin": {
+          "default": "legacy-static-rules",
+          "enum": ["legacy-static-rules", "browser-static-rules"],
+          "title": "Origin",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "rule_id",
+        "title",
+        "category",
+        "proposed_severity",
+        "disposition",
+        "rationale",
+        "recommendation",
+        "evidence",
+        "origin"
+      ],
+      "title": "Candidate",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "line_start": {
+          "minimum": 1,
+          "title": "Line Start",
+          "type": "integer"
+        },
+        "line_end": {
+          "minimum": 1,
+          "title": "Line End",
+          "type": "integer"
+        },
+        "excerpt": {
+          "title": "Excerpt",
+          "type": "string"
+        },
+        "validation": {
+          "const": "source-bound",
+          "default": "source-bound",
+          "title": "Validation",
+          "type": "string"
+        }
+      },
+      "required": ["line_start", "line_end", "excerpt", "validation"],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "Stage": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "enum": [
+            "Static rules",
+            "Three-model analysis",
+            "Orchestration",
+            "Human review"
+          ],
+          "title": "Name",
+          "type": "string"
+        },
+        "status": {
+          "enum": ["completed", "not-implemented", "not-performed"],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": ["name", "status"],
+      "title": "Stage",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "created_at": {
+      "title": "Created At",
+      "type": "string"
+    },
+    "execution": {
+      "enum": ["recorded", "local", "browser"],
+      "title": "Execution",
+      "type": "string"
+    },
+    "mode": {
+      "const": "static",
+      "default": "static",
+      "title": "Mode",
+      "type": "string"
+    },
+    "engine": {
+      "default": "legacy-static-rules",
+      "enum": ["legacy-static-rules", "browser-static-rules"],
+      "title": "Engine",
+      "type": "string"
+    },
+    "engine_version": {
+      "const": "0.1.0",
+      "default": "0.1.0",
+      "title": "Engine Version",
+      "type": "string"
+    },
+    "source_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Source Sha256",
+      "type": "string"
+    },
+    "input": {
+      "$ref": "#/$defs/AuditInput"
+    },
+    "candidates": {
+      "items": {
+        "$ref": "#/$defs/Candidate"
+      },
+      "title": "Candidates",
+      "type": "array"
+    },
+    "stages": {
+      "items": {
+        "$ref": "#/$defs/Stage"
+      },
+      "title": "Stages",
+      "type": "array"
+    },
+    "limitations": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Limitations",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "created_at",
+    "execution",
+    "mode",
+    "engine",
+    "engine_version",
+    "source_sha256",
+    "input",
+    "candidates",
+    "stages",
+    "limitations"
+  ],
+  "title": "AuditReport",
+  "type": "object"
+}

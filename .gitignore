@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+node_modules/
+.next/
+out/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+next-env.d.ts
+.env
+.env.*
+!.env.example
+.vercel/
+.DS_Store
+*.log
+
+# Optional documentation authoring environment
+.venv-docs/

@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.patch -text
+
+# Preserve embedded font and document bytes across platforms
+*.pdf binary
+*.ttf binary

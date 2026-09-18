@@ -1,0 +1,107 @@
+{
+  "SC-001": {
+    "title": "External call before balance update",
+    "category": "State & interactions",
+    "proposed_severity": "HIGH",
+    "rationale": "external call before state update -> possible REENTRANCY",
+    "recommendation": "Apply checks-effects-interactions: update state BEFORE the external call, or use OpenZeppelin ReentrancyGuard."
+  },
+  "SC-002": {
+    "title": "Unchecked low-level call",
+    "category": "External interactions",
+    "proposed_severity": "MEDIUM",
+    "rationale": "low-level call return value UNCHECKED",
+    "recommendation": "Capture and check the boolean: (bool ok, ) = ...; require(ok);."
+  },
+  "SC-003": {
+    "title": "Unchecked send",
+    "category": "External interactions",
+    "proposed_severity": "MEDIUM",
+    "rationale": "return value of .send() ignored -> silent failure",
+    "recommendation": "Check the return value of .send() or prefer .call with a require, using checks-effects-interactions."
+  },
+  "SC-004": {
+    "title": "Delegatecall requires review",
+    "category": "Execution authority",
+    "proposed_severity": "HIGH",
+    "rationale": "A delegatecall is present. The rule does not establish that its target is attacker-controlled.",
+    "recommendation": "Trace target control, upgrade authorization and storage compatibility before adjudication."
+  },
+  "SC-005": {
+    "title": "tx.origin authorization",
+    "category": "Access control",
+    "proposed_severity": "HIGH",
+    "rationale": "tx.origin used for authorization",
+    "recommendation": "Use msg.sender for authorization; tx.origin is phishable."
+  },
+  "SC-006": {
+    "title": "selfdestruct requires review",
+    "category": "Asset lifecycle",
+    "proposed_severity": "MEDIUM",
+    "rationale": "A selfdestruct expression is present; its chain-specific effects have not been checked.",
+    "recommendation": "Review reachability, authorization, asset flow and the target chain's execution semantics."
+  },
+  "SC-007": {
+    "title": "Legacy compiler declaration",
+    "category": "Compiler configuration",
+    "proposed_severity": "LOW",
+    "rationale": "outdated compiler pragma",
+    "recommendation": "Upgrade to a current 0.8.x compiler (built-in overflow checks)."
+  },
+  "SC-008": {
+    "title": "Missing compiler pragma",
+    "category": "Compiler configuration",
+    "proposed_severity": "LOW",
+    "rationale": "missing Solidity compiler pragma -> compiler version is not pinned",
+    "recommendation": "Add a pinned pragma, e.g. `pragma solidity 0.8.24;`, so the contract cannot be compiled with an unexpected/older compiler."
+  },
+  "SC-009": {
+    "title": "Block-data randomness candidate",
+    "category": "Economic logic",
+    "proposed_severity": "HIGH",
+    "rationale": "Block data occurs in a contract containing randomness-related terms; data flow is unverified.",
+    "recommendation": "Trace the randomness source and adversarial influence over outcomes and asset payouts."
+  },
+  "SC-010": {
+    "title": "Caller-controlled callback",
+    "category": "External interactions",
+    "proposed_severity": "HIGH",
+    "rationale": "The source calls a method on an interface derived from msg.sender. This may be attack-side code.",
+    "recommendation": "Inspect both sides of the callback; do not infer that an external victim is vulnerable."
+  },
+  "SC-011": {
+    "title": "Predictable game outcome",
+    "category": "Economic logic",
+    "proposed_severity": "HIGH",
+    "rationale": "winner is derived from player-supplied parity -> predictable game outcome",
+    "recommendation": "The second player can read the first player's number on-chain and pick a winning parity. Use commit-reveal so choices are hidden until locked in."
+  },
+  "SC-012": {
+    "title": "Ownership change requires review",
+    "category": "Access control",
+    "proposed_severity": "HIGH",
+    "rationale": "A function matches the ownership change requires review rule; verify its intended behavior.",
+    "recommendation": "Restrict state-changing/ownership functions with an access-control modifier (e.g. OpenZeppelin onlyOwner/RBAC)."
+  },
+  "SC-013": {
+    "title": "Timestamp-sensitive logic",
+    "category": "Time assumptions",
+    "proposed_severity": "MEDIUM",
+    "rationale": "block timestamp influences security-sensitive logic",
+    "recommendation": "Avoid exact timestamp assumptions; use safe time windows and do not use timestamps as randomness."
+  },
+  "SC-014": {
+    "title": "Asset transfer requires review",
+    "category": "Asset custody",
+    "proposed_severity": "HIGH",
+    "rationale": "A transfer occurs without a guard recognized by the rule. Legitimate payouts may match.",
+    "recommendation": "Review intended permissions, recipient selection, preconditions and business invariants."
+  },
+  "SC-015": {
+    "title": "Potential unbounded iteration",
+    "category": "Availability",
+    "proposed_severity": "MEDIUM",
+    "rationale": "A function matches the potential unbounded iteration rule; verify its intended behavior.",
+    "recommendation": "Bound iteration counts, paginate work, or use pull-based processing."
+  }
+}

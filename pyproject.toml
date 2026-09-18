@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dtcc-multi-agent-audit"
+version = "0.1.0"
+description = "Evidence-bound smart contract analysis: DTCC project academic prototype"
+requires-python = ">=3.12,<3.15"
+dependencies = ["fastapi>=0.115,<1", "pydantic>=2.11,<3", "uvicorn>=0.34,<1", "httpx>=0.28,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+
+[tool.setuptools]
+packages = ["audit_core", "audit_api"]
+package-dir = {audit_core = "packages/audit-core/src/audit_core", audit_api = "services/audit-api/src/audit_api"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["packages/audit-core/src/audit_core/legacy_rules.py"]

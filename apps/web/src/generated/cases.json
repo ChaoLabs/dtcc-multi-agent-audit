@@ -1,0 +1,412 @@
+[
+  {
+    "id": "vault",
+    "title": "Vault withdrawal",
+    "summary": "State ordering, caller authorization and unchecked calls in a minimal asset vault.",
+    "caveat": "Three planted patterns. This teaching fixture is not an independent accuracy benchmark.",
+    "report": {
+      "schema_version": "1.0.0",
+      "run_id": "6549f376-5a77-475d-a385-9ca830da3136",
+      "created_at": "2026-09-17T22:36:15.466582+00:00",
+      "execution": "recorded",
+      "mode": "static",
+      "engine": "legacy-static-rules",
+      "engine_version": "0.1.0",
+      "source_sha256": "ddc37d9ddf84e235478f96173344c535993fa8254c9fda6d77f35b432627d49f",
+      "input": {
+        "filename": "vulnerable_vault.sol",
+        "source": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\n/// Test contract with 3 PLANTED vulnerabilities for the audit agent.\n/// DO NOT DEPLOY.\ncontract VulnerableVault {\n    mapping(address => uint256) public balances;\n    address public owner;\n\n    constructor() {\n        owner = msg.sender;\n    }\n\n    function deposit() public payable {\n        balances[msg.sender] += msg.value;\n    }\n\n    // BUG 1: Reentrancy — external call before state update (SWC-107)\n    function withdraw() public {\n        uint256 bal = balances[msg.sender];\n        require(bal > 0, \"no balance\");\n        (bool ok, ) = msg.sender.call{value: bal}(\"\");\n        require(ok, \"transfer failed\");\n        balances[msg.sender] = 0; // state updated AFTER the call — exploitable\n    }\n\n    // BUG 2: tx.origin used for authorization (SWC-115)\n    function emergencyDrain(address payable to) public {\n        require(tx.origin == owner, \"not owner\");\n        to.transfer(address(this).balance);\n    }\n\n    // BUG 3: Unchecked low-level call return value (SWC-104)\n    function payOut(address payable to, uint256 amount) public {\n        require(msg.sender == owner, \"not owner\");\n        to.call{value: amount}(\"\"); // return value ignored\n    }\n\n    receive() external payable {}\n}\n"
+      },
+      "candidates": [
+        {
+          "id": "56771651426a89f19e25020e",
+          "rule_id": "SC-001",
+          "title": "External call before balance update",
+          "category": "State & interactions",
+          "proposed_severity": "HIGH",
+          "disposition": "needs-review",
+          "rationale": "external call before state update -> possible REENTRANCY",
+          "recommendation": "Apply checks-effects-interactions: update state BEFORE the external call, or use OpenZeppelin ReentrancyGuard.",
+          "evidence": {
+            "line_start": 22,
+            "line_end": 22,
+            "excerpt": "        (bool ok, ) = msg.sender.call{value: bal}(\"\");",
+            "validation": "source-bound"
+          },
+          "origin": "legacy-static-rules"
+        },
+        {
+          "id": "8b0d488e5f5a39f38d71cd44",
+          "rule_id": "SC-005",
+          "title": "tx.origin authorization",
+          "category": "Access control",
+          "proposed_severity": "HIGH",
+          "disposition": "needs-review",
+          "rationale": "tx.origin used for authorization",
+          "recommendation": "Use msg.sender for authorization; tx.origin is phishable.",
+          "evidence": {
+            "line_start": 29,
+            "line_end": 29,
+            "excerpt": "        require(tx.origin == owner, \"not owner\");",
+            "validation": "source-bound"
+          },
+          "origin": "legacy-static-rules"
+        },
+        {
+          "id": "ca2b9ecf20b442c327fe537c",
+          "rule_id": "SC-002",
+          "title": "Unchecked low-level call",
+          "category": "External interactions",
+          "proposed_severity": "MEDIUM",
+          "disposition": "needs-review",
+          "rationale": "low-level call return value UNCHECKED",
+          "recommendation": "Capture and check the boolean: (bool ok, ) = ...; require(ok);.",
+          "evidence": {
+            "line_start": 36,
+            "line_end": 36,
+            "excerpt": "        to.call{value: amount}(\"\"); // return value ignored",
+            "validation": "source-bound"
+          },
+          "origin": "legacy-static-rules"
+        }
+      ],
+      "stages": [
+        {
+          "name": "Static rules",
+          "status": "completed"
+        },
+        {
+          "name": "Three-model analysis",
+          "status": "not-implemented"
+        },
+        {
+          "name": "Orchestration",
+          "status": "not-implemented"
+        },
+        {
+          "name": "Human review",
+          "status": "not-performed"
+        }
+      ],
+      "limitations": [
+        "Regex baseline only: source has not been compiled; imports and dependencies are not resolved.",
+        "Source-bound evidence proves a location, not exploitability or semantic correctness.",
+        "Comments, formatting, naming and function-scope heuristics can cause false positives and misses.",
+        "All candidates need human review. No findings does not mean the contract is safe.",
+        "No Bedrock model, multi-agent orchestration, Slither, bytecode or on-chain state analysis ran.",
+        "Severity is a rule-level proposal, not a calibrated probability, loss estimate or risk score."
+      ]
+    }
+  },
+  {
+    "id": "callback",
+    "title": "Caller-controlled callback",
+    "summary": "An attack-side callback illustrating trust boundaries between contracts.",
+    "caveat": "Attack-side code: a pattern here does not establish that a victim contract is vulnerable.",
+    "report": {
+      "schema_version": "1.0.0",
+      "run_id": "71f41b23-55c1-4f73-a51d-0aaec84b8482",
+      "created_at": "2026-09-17T22:36:15.466925+00:00",
+      "execution": "recorded",
+      "mode": "static",
+      "engine": "legacy-static-rules",
+      "engine_version": "0.1.0",
+      "source_sha256": "12ba37c01297563d131bb2f92dbb2c25b9be995eda4510b3ef6d83a13c73c33a",
+      "input": {
+        "filename": "muxiang_sample_1_tx_attack_wallet.sol",
+        "source": "pragma solidity ^0.8.0;\n\ninterface TxUserWallet {\n    function transferTo(address payable dest, uint amount) external;\n}\n\ncontract TxAttackWallet {\n    address payable private immutable owner;\n\n    // Constructor sets the contract deployer as the owner\n    constructor() {\n        owner = payable(msg.sender);\n    }\n\n    // fallback function to receive Ether and trigger transfer\n    fallback() external payable {\n        // Call transferTo on TxUserWallet (msg.sender) to send its balance to owner\n        TxUserWallet(msg.sender).transferTo(owner, msg.sender.balance);\n    }\n}\n"
+      },
+      "candidates": [
+        {
+          "id": "d0f95d5578af796753f7e093",
+          "rule_id": "SC-010",
+          "title": "Caller-controlled callback",
+          "category": "External interactions",
+          "proposed_severity": "HIGH",
+          "disposition": "needs-review",
+          "rationale": "The source calls a method on an interface derived from msg.sender. This may be attack-side code.",
+          "recommendation": "Inspect both sides of the callback; do not infer that an external victim is vulnerable.",
+          "evidence": {
+            "line_start": 18,
+            "line_end": 18,
+            "excerpt": "        TxUserWallet(msg.sender).transferTo(owner, msg.sender.balance);",
+            "validation": "source-bound"
+          },
+          "origin": "legacy-static-rules"
+        }
+      ],
+      "stages": [
+        {
+          "name": "Static rules",
+          "status": "completed"
+        },
+        {
+          "name": "Three-model analysis",
+          "status": "not-implemented"
+        },
+        {
+          "name": "Orchestration",
+          "status": "not-implemented"
+        },
+        {
+          "name": "Human review",
+          "status": "not-performed"
+        }
+      ],
+      "limitations": [
+        "Regex baseline only: source has not been compiled; imports and dependencies are not resolved.",
+        "Source-bound evidence proves a location, not exploitability or semantic correctness.",
+        "Comments, formatting, naming and function-scope heuristics can cause false positives and misses.",
+        "All candidates need human review. No findings does not mean the contract is safe.",
+        "No Bedrock model, multi-agent orchestration, Slither, bytecode or on-chain state analysis ran.",
+        "Severity is a rule-level proposal, not a calibrated probability, loss estimate or risk score."
+      ]
+    }
+  },
+  {
+    "id": "delegatecall",
+    "title": "Delegated execution",
+    "summary": "Delegatecall and ownership mutation as execution-authority review candidates.",
+    "caveat": "Original preserved unchanged. It contains compiler-incompatible syntax; no compilation is claimed.",
+    "report": {
+      "schema_version": "1.0.0",
+      "run_id": "ff640954-7343-4445-95a5-354b090bd5e2",
+      "created_at": "2026-09-17T22:36:15.467220+00:00",
+      "execution": "recorded",
+      "mode": "static",
+      "engine": "legacy-static-rules",
+      "engine_version": "0.1.0",
+      "source_sha256": "63c7c25c4d80ce5546ee3d641754365cad88e96564cd494c24dec0a13be08c80",
+      "input": {
+        "filename": "muxiang_sample_2_delegatecall_proxy.sol",
+        "source": "pragma solidity ^0.8.16;\n\ncontract Proxy {\n    address public owner;\n\n    constructor() {\n        owner = msg.sender;\n    }\n\n    function forward(address callee, bytes calldata _data) public {\n        require(callee.delegatecall(_data), \"Delegatecall failed\");\n    }\n}\n\ncontract Target {\n    address public owner;\n\n    function pwn() public {\n        owner = msg.sender;\n    }\n}\n\ncontract Attack {\n    address public proxy;\n\n    constructor(address _proxy) {\n        proxy = _proxy;\n    }\n\n    function attack(address target) public {\n        Proxy(proxy).forward(target, abi.encodeWithSignature(\"pwn()\"));\n    }\n}\n"
+      },
+      "candidates": [
+        {
+          "id": "4147327f1db6de96bec7a2ee",
+          "rule_id": "SC-004",
+          "title": "Delegatecall requires review",
+          "category": "Execution authority",
+          "proposed_severity": "HIGH",
+          "disposition": "needs-review",
+          "rationale": "A delegatecall is present. The rule does not establish that its target is attacker-controlled.",
+          "recommendation": "Trace target control, upgrade authorization and storage compatibility before adjudication.",
+          "evidence": {
+            "line_start": 11,
+            "line_end": 11,
+            "excerpt": "        require(callee.delegatecall(_data), \"Delegatecall failed\");",
+            "validation": "source-bound"
+          },
+          "origin": "legacy-static-rules"
+        },
+        {
+          "id": "ec51b61d733236cd822f928e",
+          "rule_id": "SC-012",
+          "title": "Ownership change requires review",
+          "category": "Access control",
+          "proposed_severity": "HIGH",
+          "disposition": "needs-review",
+          "rationale": "function 'pwn' changes ownership with no access control",
+          "recommendation": "Restrict state-changing/ownership functions with an access-control modifier (e.g. OpenZeppelin onlyOwner/RBAC).",
+          "evidence": {
+            "line_start": 19,
+            "line_end": 19,
+            "excerpt": "        owner = msg.sender;",
+            "validation": "source-bound"
+          },
+          "origin": "legacy-static-rules"
+        }
+      ],
+      "stages": [
+        {
+          "name": "Static rules",
+          "status": "completed"
+        },
+        {
+          "name": "Three-model analysis",
+          "status": "not-implemented"
+        },
+        {
+          "name": "Orchestration",
+          "status": "not-implemented"
+        },
+        {
+          "name": "Human review",
+          "status": "not-performed"
+        }
+      ],
+      "limitations": [
+        "Regex baseline only: source has not been compiled; imports and dependencies are not resolved.",
+        "Source-bound evidence proves a location, not exploitability or semantic correctness.",
+        "Comments, formatting, naming and function-scope heuristics can cause false positives and misses.",
+        "All candidates need human review. No findings does not mean the contract is safe.",
+        "No Bedrock model, multi-agent orchestration, Slither, bytecode or on-chain state analysis ran.",
+        "Severity is a rule-level proposal, not a calibrated probability, loss estimate or risk score."
+      ]
+    }
+  },
+  {
+    "id": "randomness",
+    "title": "Block-data guessing game",
+    "summary": "Randomness assumptions and conditional asset payouts.",
+    "caveat": "The asset-transfer rule also fires on a conditional payout: an example requiring false-positive review.",
+    "report": {
+      "schema_version": "1.0.0",
+      "run_id": "36190186-bb58-484e-be6e-8e60dec18f20",
+      "created_at": "2026-09-17T22:36:15.467629+00:00",
+      "execution": "recorded",
+      "mode": "static",
+      "engine": "legacy-static-rules",
+      "engine_version": "0.1.0",
+      "source_sha256": "601ddea7be4ac4f5fb948cd1259751d45b3c379a0bed4e1bf8cba5eac9a5a17b",
+      "input": {
+        "filename": "muxiang_sample_3_weak_randomness.sol",
+        "source": "pragma solidity ^0.8.24;\n\ncontract GuessTheRandomNumber {\n    constructor() payable {}\n\n    function guess(uint256 _guess) public {\n        uint256 answer = uint256(\n            keccak256(\n                abi.encodePacked(blockhash(block.number - 1), block.timestamp)\n            )\n        );\n\n        if (_guess == answer) {\n            (bool sent,) = msg.sender.call{value: 1 ether}(\"\");\n            require(sent, \"Failed to send Ether\");\n        }\n    }\n}\n"
+      },
+      "candidates": [
+        {
+          "id": "08c8635cbe31d4047ac6a1d9",
+          "rule_id": "SC-009",
+          "title": "Block-data randomness candidate",
+          "category": "Economic logic",
+          "proposed_severity": "HIGH",
+          "disposition": "needs-review",
+          "rationale": "Block data occurs in a contract containing randomness-related terms; data flow is unverified.",
+          "recommendation": "Trace the randomness source and adversarial influence over outcomes and asset payouts.",
+          "evidence": {
+            "line_start": 9,
+            "line_end": 9,
+            "excerpt": "                abi.encodePacked(blockhash(block.number - 1), block.timestamp)",
+            "validation": "source-bound"
+          },
+          "origin": "legacy-static-rules"
+        },
+        {
+          "id": "b0467aab198c7020d68d4966",
+          "rule_id": "SC-014",
+          "title": "Asset transfer requires review",
+          "category": "Asset custody",
+          "proposed_severity": "HIGH",
+          "disposition": "needs-review",
+          "rationale": "A transfer occurs without a guard recognized by the rule. Legitimate payouts may match.",
+          "recommendation": "Review intended permissions, recipient selection, preconditions and business invariants.",
+          "evidence": {
+            "line_start": 14,
+            "line_end": 14,
+            "excerpt": "            (bool sent,) = msg.sender.call{value: 1 ether}(\"\");",
+            "validation": "source-bound"
+          },
+          "origin": "legacy-static-rules"
+        }
+      ],
+      "stages": [
+        {
+          "name": "Static rules",
+          "status": "completed"
+        },
+        {
+          "name": "Three-model analysis",
+          "status": "not-implemented"
+        },
+        {
+          "name": "Orchestration",
+          "status": "not-implemented"
+        },
+        {
+          "name": "Human review",
+          "status": "not-performed"
+        }
+      ],
+      "limitations": [
+        "Regex baseline only: source has not been compiled; imports and dependencies are not resolved.",
+        "Source-bound evidence proves a location, not exploitability or semantic correctness.",
+        "Comments, formatting, naming and function-scope heuristics can cause false positives and misses.",
+        "All candidates need human review. No findings does not mean the contract is safe.",
+        "No Bedrock model, multi-agent orchestration, Slither, bytecode or on-chain state analysis ran.",
+        "Severity is a rule-level proposal, not a calibrated probability, loss estimate or risk score."
+      ]
+    }
+  },
+  {
+    "id": "parity",
+    "title": "Two-player parity game",
+    "summary": "Public player choices and predictable economic outcomes.",
+    "caveat": "Missing compiler pragma is retained. No bytecode, compiler or execution test has been performed.",
+    "report": {
+      "schema_version": "1.0.0",
+      "run_id": "dc10180d-2d58-4260-bdd3-c47ee8ccf260",
+      "created_at": "2026-09-17T22:36:15.467986+00:00",
+      "execution": "recorded",
+      "mode": "static",
+      "engine": "legacy-static-rules",
+      "engine_version": "0.1.0",
+      "source_sha256": "1725183f90dfbd2aa17825a0c3aef90e9d248ed1041d63142a7594021bac8938",
+      "input": {
+        "filename": "muxiang_sample_4_odd_even.sol",
+        "source": "contract OddEven {\n    struct Player {\n        address payable addr;\n        uint number;\n    }\n\n    Player[2] private players;\n    uint8 count = 0;\n\n    function play(uint number) public payable {\n        require(msg.value == 1 ether);\n        players[count] = Player(payable(msg.sender), number);\n        count++;\n        if (count == 2) selectWinner();\n    }\n\n    function selectWinner() private {\n        uint n = players[0].number + players[1].number;\n        players[n % 2].addr.transfer(address(this).balance);\n        delete players;\n        count = 0;\n    }\n}\n"
+      },
+      "candidates": [
+        {
+          "id": "0b66998b112c35792ebc025f",
+          "rule_id": "SC-011",
+          "title": "Predictable game outcome",
+          "category": "Economic logic",
+          "proposed_severity": "HIGH",
+          "disposition": "needs-review",
+          "rationale": "winner is derived from player-supplied parity -> predictable game outcome",
+          "recommendation": "The second player can read the first player's number on-chain and pick a winning parity. Use commit-reveal so choices are hidden until locked in.",
+          "evidence": {
+            "line_start": 19,
+            "line_end": 19,
+            "excerpt": "        players[n % 2].addr.transfer(address(this).balance);",
+            "validation": "source-bound"
+          },
+          "origin": "legacy-static-rules"
+        },
+        {
+          "id": "e2410e61a8e86ef845de529b",
+          "rule_id": "SC-008",
+          "title": "Missing compiler pragma",
+          "category": "Compiler configuration",
+          "proposed_severity": "LOW",
+          "disposition": "needs-review",
+          "rationale": "missing Solidity compiler pragma -> compiler version is not pinned",
+          "recommendation": "Add a pinned pragma, e.g. `pragma solidity 0.8.24;`, so the contract cannot be compiled with an unexpected/older compiler.",
+          "evidence": {
+            "line_start": 1,
+            "line_end": 1,
+            "excerpt": "contract OddEven {",
+            "validation": "source-bound"
+          },
+          "origin": "legacy-static-rules"
+        }
+      ],
+      "stages": [
+        {
+          "name": "Static rules",
+          "status": "completed"
+        },
+        {
+          "name": "Three-model analysis",
+          "status": "not-implemented"
+        },
+        {
+          "name": "Orchestration",
+          "status": "not-implemented"
+        },
+        {
+          "name": "Human review",
+          "status": "not-performed"
+        }
+      ],
+      "limitations": [
+        "Regex baseline only: source has not been compiled; imports and dependencies are not resolved.",
+        "Source-bound evidence proves a location, not exploitability or semantic correctness.",
+        "Comments, formatting, naming and function-scope heuristics can cause false positives and misses.",
+        "All candidates need human review. No findings does not mean the contract is safe.",
+        "No Bedrock model, multi-agent orchestration, Slither, bytecode or on-chain state analysis ran.",
+        "Severity is a rule-level proposal, not a calibrated probability, loss estimate or risk score."
+      ]
+    }
+  }
+]
