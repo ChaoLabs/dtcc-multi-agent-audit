@@ -257,7 +257,11 @@ export default function Workspace({ cases }: { cases: Case[] }) {
         const response = await fetch("/api/reviews", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...snapshot, api_key: apiKey.current }),
+          body: JSON.stringify({
+            ...snapshot,
+            api_key: apiKey.current,
+            model_id: "global.anthropic.claude-sonnet-5-5",
+          }),
           signal: abort.signal,
           credentials: "omit",
           cache: "no-store",
@@ -284,7 +288,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           "browser",
         );
         if (
-          result.model_review.model_id !== BEDROCK.model ||
+          result.model_review.model_id !== "global.anthropic.claude-sonnet-5-5" ||
           result.model_review.region !== BEDROCK.region ||
           result.model_review.protocol !== BEDROCK.protocol
         )

@@ -2,7 +2,10 @@
 import { createHash } from "node:crypto";
 import Ajv from "ajv";
 import schema from "@/generated/review.schema.json";
-import { BEDROCK, validateApiKey } from "@/lib/bedrock-config";
+import {
+  BEDROCK,
+  BEDROCK_MODELS,
+  validateApiKey,} from "@/lib/bedrock-config";
 import {
   analyzeStatic,
   sourceLines,
@@ -232,10 +235,11 @@ export async function handleReview(
     }
     if (
       !object(input) ||
-      Object.keys(input).sort().join(",") !== "api_key,filename,source" ||
+      Object.keys(input).sort().join(",") !== "api_key,filename,model_id,source" ||
       typeof input.filename !== "string" ||
       typeof input.source !== "string" ||
-      typeof input.api_key !== "string"
+      typeof input.api_key !== "string" ||
+      typeof input.model_id !== "string"
     )
       throw new RequestError(
         "Provide a Solidity filename, source and Bedrock API key.",
@@ -243,6 +247,14 @@ export async function handleReview(
         "invalid_body",
       );
     const { filename, source } = input;
+    const selectedModel = BEDROCK_MODELS.find(
+      (model) => model.id === input.model_id,
+    );
+    if (!selectedModel)
+      throw new RequestError("Select a supported Bedrock model.",
+    400,
+    "invalid_model",
+  );
     let key: string;
     try {
       key = validateApiKey(input.api_key);
@@ -267,7 +279,7 @@ export async function handleReview(
     const baseline = await analyzeStatic(filename, source);
     const started = performance.now();
     const response = await transport(
-      `https://bedrock-runtime.${BEDROCK.region}.amazonaws.com/model/${BEDROCK.model}/converse`,
+      `https://bedrock-runtime.${BEDROCK.region}.amazonaws.com/model/${selectedModel.id}/converse`,
       {
         method: "POST",
         headers: {
@@ -303,7 +315,7 @@ export async function handleReview(
       void response.body?.cancel().catch(() => {});
       if (response.status === 401 || response.status === 403)
         throw new RequestError(
-          "Bedrock denied access. Replace an expired key or check access to GPT-6 Astra in us-east-1.",
+          "`Bedrock denied access. Replace an expired key or check access to ${selectedModel.label} in ${BEDROCK.region}.`",
           401,
           "bedrock_access",
         );
@@ -315,7 +327,7 @@ export async function handleReview(
         );
       if (response.status === 400 || response.status === 404)
         throw new RequestError(
-          "Bedrock could not use this model configuration. Check access to us.openai.gpt-6-astra in us-east-1.",
+          "`Bedrock could not use this model configuration. Check access to ${selectedModel.id} in ${BEDROCK.region}.`",
           502,
           "bedrock_model",
         );
@@ -327,12 +339,15 @@ export async function handleReview(
     if (raw.includes(key))
       throw new RequestError("Bedrock returned an invalid report.");
     const payload: unknown = JSON.parse(raw);
+    if (object(payload)) {
+      console.log("Bedrock stopReason:", payload.stopReason);
+    }
     if (!object(payload) || payload.stopReason !== "end_turn")
       throw new RequestError(
-        "Bedrock did not complete the review. Try a smaller contract.",
-        502,
-        "incomplete",
-      );
+    "Bedrock did not complete the review. Try a smaller contract.",
+    502,
+    "incomplete",
+  );
     const output = payload.output;
     const message = object(output) ? output.message : null;
     const blocks = object(message) ? message.content : null;
@@ -359,7 +374,7 @@ export async function handleReview(
         {
           ...content,
           provider: "aws-bedrock",
-          model_id: BEDROCK.model,
+          model_id: selectedModel.id,
           region: BEDROCK.region,
           protocol: BEDROCK.protocol,
           source_sha256: baseline.source_sha256,
