@@ -18,6 +18,7 @@ function request(
       filename: "Vault.sol",
       source,
       api_key: key,
+      model_id: BEDROCK.model,
       ...changes,
     }),
   });
@@ -85,6 +86,8 @@ for (const [name, changes, headers, status] of [
   ["key with newline", { api_key: key + "\nsecret" }, {}, 400],
   ["arbitrary endpoint", { endpoint: "https://untrusted.example" }, {}, 400],
   ["untrusted candidates", { candidates: [] }, {}, 400],
+  ["missing model", { model_id: undefined }, {}, 400],
+  ["unsupported model", { model_id: "untrusted.model" }, {}, 400],
   ["bad filename", { filename: "../Vault.sol" }, {}, 400],
   ["empty source", { source: "" }, {}, 400],
   ["large source", { source: "x".repeat(48_001) }, {}, 400],
@@ -281,7 +284,12 @@ test("production route is present and rejects invalid requests without AWS or Py
   const url = "http://127.0.0.1:3100/api/reviews";
   const response = await client.post(url, {
     headers: { origin: "http://127.0.0.1:3100" },
-    data: { filename: "Vault.sol", source, api_key: "invalid" },
+    data: {
+      filename: "Vault.sol",
+      source,
+      api_key: "invalid",
+      model_id: BEDROCK.model,
+    },
   });
   expect(response.status()).toBe(400);
   expect((await response.json()).code).toBe("invalid_key");
