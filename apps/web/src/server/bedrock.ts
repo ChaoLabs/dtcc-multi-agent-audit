@@ -2,10 +2,7 @@
 import { createHash } from "node:crypto";
 import Ajv from "ajv";
 import schema from "@/generated/review.schema.json";
-import {
-  BEDROCK,
-  BEDROCK_MODELS,
-  validateApiKey,} from "@/lib/bedrock-config";
+import { BEDROCK, BEDROCK_MODELS, validateApiKey } from "@/lib/bedrock-config";
 import {
   analyzeStatic,
   sourceLines,
@@ -86,6 +83,147 @@ export function createLimiter() {
   };
 }
 const acquire = createLimiter();
+async function runModelReview(
+  model: (typeof BEDROCK_MODELS)[number],
+  key: string,
+  source: string,
+  baseline: Awaited<ReturnType<typeof analyzeStatic>>,
+  signal: AbortSignal,
+  transport: typeof fetch,
+) {
+  const started = performance.now();
+
+  const response = await transport(
+    `https://bedrock-runtime.${BEDROCK.region}.amazonaws.com/model/${model.id}/converse`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        system: [{ text: SYSTEM }],
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                text: JSON.stringify({
+                  source_lines: sourceLines(source).map((text, i) => ({
+                    line: i + 1,
+                    text,
+                  })),
+                  static_candidates: baseline.candidates,
+                }),
+              },
+            ],
+          },
+        ],
+        inferenceConfig: { maxTokens: 8192 },
+      }),
+      signal,
+      redirect: "error",
+      cache: "no-store",
+    },
+  );
+
+  if (!response.ok) {
+    void response.body?.cancel().catch(() => {});
+
+    if (response.status === 401 || response.status === 403)
+      throw new RequestError(
+        `Bedrock denied access. Check access to ${model.label} in ${BEDROCK.region}.`,
+        401,
+        "bedrock_access",
+      );
+
+    if (response.status === 429)
+      throw new RequestError(
+        "Bedrock is rate limited. Wait before trying again.",
+        429,
+        "bedrock_rate_limit",
+      );
+
+    if (response.status === 400 || response.status === 404)
+      throw new RequestError(
+        `Bedrock could not use model ${model.id}.`,
+        502,
+        "bedrock_model",
+      );
+
+    throw new RequestError(
+      "Bedrock is temporarily unavailable. Try again later.",
+    );
+  }
+
+  const raw = await readBounded(response.body, 256_000, signal);
+
+  if (raw.includes(key))
+    throw new RequestError("Bedrock returned an invalid report.");
+
+  const payload: unknown = JSON.parse(raw);
+
+  if (object(payload))
+    console.log(`${model.label} stopReason:`, payload.stopReason);
+
+  if (!object(payload) || payload.stopReason !== "end_turn")
+    throw new RequestError(
+      `${model.label} did not complete the review. Try a smaller contract.`,
+      502,
+      "incomplete",
+    );
+
+  const output = payload.output;
+  const message = object(output) ? output.message : null;
+  const blocks = object(message) ? message.content : null;
+
+  if (!Array.isArray(blocks))
+    throw new RequestError(`${model.label} returned an unreadable report.`);
+
+  let text = blocks
+    .filter((b) => object(b) && typeof b.text === "string")
+    .map((b) => b.text)
+    .join("")
+    .trim();
+
+  if (text.startsWith("```json\n") && text.endsWith("```"))
+    text = text.slice(8, -3).trim();
+
+  const content: unknown = JSON.parse(text);
+
+  if (!validContent(content))
+    throw new RequestError(
+      `${model.label} returned an invalid report. Static results remain available.`,
+      502,
+      "invalid_report",
+    );
+
+  const usage = object(payload.usage) ? payload.usage : {};
+
+  try {
+    return await validateModelReview(
+      {
+        ...content,
+        provider: "aws-bedrock",
+        model_id: model.id,
+        region: BEDROCK.region,
+        protocol: BEDROCK.protocol,
+        source_sha256: baseline.source_sha256,
+        created_at: new Date().toISOString(),
+        elapsed_ms: Math.round(performance.now() - started),
+        input_tokens: tokens(usage.inputTokens),
+        output_tokens: tokens(usage.outputTokens),
+      },
+      source,
+    );
+  } catch {
+    throw new RequestError(
+      `${model.label} evidence does not match the source. The model review was rejected.`,
+      502,
+      "invalid_evidence",
+    );
+  }
+}
 
 function sameOrigin(request: Request) {
   const raw = request.headers.get("origin");
@@ -235,7 +373,8 @@ export async function handleReview(
     }
     if (
       !object(input) ||
-      Object.keys(input).sort().join(",") !== "api_key,filename,model_id,source" ||
+      Object.keys(input).sort().join(",") !==
+        "api_key,filename,model_id,source" ||
       typeof input.filename !== "string" ||
       typeof input.source !== "string" ||
       typeof input.api_key !== "string" ||
@@ -251,10 +390,11 @@ export async function handleReview(
       (model) => model.id === input.model_id,
     );
     if (!selectedModel)
-      throw new RequestError("Select a supported Bedrock model.",
-    400,
-    "invalid_model",
-  );
+      throw new RequestError(
+        "Select a supported Bedrock model.",
+        400,
+        "invalid_model",
+      );
     let key: string;
     try {
       key = validateApiKey(input.api_key);
@@ -277,122 +417,16 @@ export async function handleReview(
     release = limiter(key);
     // Recompute candidates on the server; never accept browser-supplied findings.
     const baseline = await analyzeStatic(filename, source);
-    const started = performance.now();
-    const response = await transport(
-      `https://bedrock-runtime.${BEDROCK.region}.amazonaws.com/model/${selectedModel.id}/converse`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${key}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          system: [{ text: SYSTEM }],
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  text: JSON.stringify({
-                    source_lines: sourceLines(source).map((text, i) => ({
-                      line: i + 1,
-                      text,
-                    })),
-                    static_candidates: baseline.candidates,
-                  }),
-                },
-              ],
-            },
-          ],
-          inferenceConfig: { maxTokens: 8192 },
-        }),
-        signal,
-        redirect: "error",
-        cache: "no-store",
-      },
+    const modelReview = await runModelReview(
+      selectedModel,
+      key,
+      source,
+      baseline,
+      signal,
+      transport,
     );
-    if (!response.ok) {
-      void response.body?.cancel().catch(() => {});
-      if (response.status === 401 || response.status === 403)
-        throw new RequestError(
-          "`Bedrock denied access. Replace an expired key or check access to ${selectedModel.label} in ${BEDROCK.region}.`",
-          401,
-          "bedrock_access",
-        );
-      if (response.status === 429)
-        throw new RequestError(
-          "Bedrock is rate limited. Wait before trying again.",
-          429,
-          "bedrock_rate_limit",
-        );
-      if (response.status === 400 || response.status === 404)
-        throw new RequestError(
-          "`Bedrock could not use this model configuration. Check access to ${selectedModel.id} in ${BEDROCK.region}.`",
-          502,
-          "bedrock_model",
-        );
-      throw new RequestError(
-        "Bedrock is temporarily unavailable. Try again later.",
-      );
-    }
-    const raw = await readBounded(response.body, 256_000, signal);
-    if (raw.includes(key))
-      throw new RequestError("Bedrock returned an invalid report.");
-    const payload: unknown = JSON.parse(raw);
-    if (object(payload)) {
-      console.log("Bedrock stopReason:", payload.stopReason);
-    }
-    if (!object(payload) || payload.stopReason !== "end_turn")
-      throw new RequestError(
-    "Bedrock did not complete the review. Try a smaller contract.",
-    502,
-    "incomplete",
-  );
-    const output = payload.output;
-    const message = object(output) ? output.message : null;
-    const blocks = object(message) ? message.content : null;
-    if (!Array.isArray(blocks))
-      throw new RequestError("Bedrock returned an unreadable report.");
-    let text = blocks
-      .filter((b) => object(b) && typeof b.text === "string")
-      .map((b) => b.text)
-      .join("")
-      .trim();
-    if (text.startsWith("```json\n") && text.endsWith("```"))
-      text = text.slice(8, -3).trim();
-    const content: unknown = JSON.parse(text);
-    if (!validContent(content))
-      throw new RequestError(
-        "Bedrock returned an invalid report. Static results remain available.",
-        502,
-        "invalid_report",
-      );
-    const usage = object(payload.usage) ? payload.usage : {};
-    let model;
-    try {
-      model = await validateModelReview(
-        {
-          ...content,
-          provider: "aws-bedrock",
-          model_id: selectedModel.id,
-          region: BEDROCK.region,
-          protocol: BEDROCK.protocol,
-          source_sha256: baseline.source_sha256,
-          created_at: new Date().toISOString(),
-          elapsed_ms: Math.round(performance.now() - started),
-          input_tokens: tokens(usage.inputTokens),
-          output_tokens: tokens(usage.outputTokens),
-        },
-        source,
-      );
-    } catch {
-      throw new RequestError(
-        "Bedrock evidence does not match the source. The model review was rejected.",
-        502,
-        "invalid_evidence",
-      );
-    }
-    return Response.json({ model_review: model }, { headers });
+
+    return Response.json({ model_review: modelReview }, { headers });
   } catch (error) {
     // Never log or return the request, raw AWS response, thrown fetch error, or credential.
     const safe =

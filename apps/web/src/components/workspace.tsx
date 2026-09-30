@@ -260,7 +260,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           body: JSON.stringify({
             ...snapshot,
             api_key: apiKey.current,
-            model_id: "global.anthropic.claude-sonnet-5-5",
+            model_id: "us.openai.gpt-6-astra",
           }),
           signal: abort.signal,
           credentials: "omit",
@@ -288,7 +288,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           "browser",
         );
         if (
-          result.model_review.model_id !== "global.anthropic.claude-sonnet-5-5" ||
+          result.model_review.model_id !== BEDROCK.model ||
           result.model_review.region !== BEDROCK.region ||
           result.model_review.protocol !== BEDROCK.protocol
         )
