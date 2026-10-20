@@ -1,15 +1,18 @@
 # Known limitations
 
-- The inherited scanner is based on regex and approximate function scopes. It is not an AST, compiler, symbolic executor or formal verifier. Formatting, comments, naming and cross-contract behavior can cause false positives and false negatives.
-- A `delegatecall` match does not prove an attacker controls its target. A transfer without a recognized modifier is not necessarily unauthorized. The guessing-game fixture illustrates this ambiguity.
-- A callback fixture includes attack-side code. Its match does not establish a defect in a victim contract.
-- The delegatecall fixture includes compiler-incompatible syntax and is intentionally preserved. No compilation success is implied. Repaired variants must be separate, attributed files.
-- All severity levels are rule or model proposals. No probability, portfolio risk score, loss estimate, compliance verdict or “safe contract” label is produced.
-- Historical taxonomy/confidence tags remain inside the retained legacy module for provenance; the public adapter deliberately does not publish them as validated SWC/OWASP mappings. New taxonomy mappings need versioned review.
-- Binding an excerpt to source only establishes structural grounding. It does not validate the vulnerability explanation or prove an exploit.
-- No Slither, compiler, multi-agent workflow, human review, dependency resolution, bytecode or on-chain state analysis runs. Bedrock single-model review is optional and requires a valid user-supplied key with access to the selected model.
-- The web route uses visitor-owned keys with fixed AWS routing and per-instance bounds. It has no application accounts, distributed rate limits, durable jobs or retention service. Keep the optional Python service on loopback; it is not the public web API.
-- The five inherited fixtures are regression/demo cases, not an independent evaluation set. Expected rule presence is not precision/recall, especially when a rule emits additional candidates.
-- Public examples are recorded. They do not update just because the website is opened. Their displayed timestamps refer to report generation, not the visitor's current time.
-- The static engine detects code-level patterns only. Model review adds hypotheses, not a verified full audit. Asset custody, upgrade governance, operational key management, adversarial economic conditions and business impact require later scope/context and qualified review.
-- Browser tests cover Chromium, including a mobile viewport; native Safari/Firefox and the user's particular macOS environment are not certified by Linux test results.
+- The inherited static scanner uses regex and approximate function scopes. It is not an AST, compiler, symbolic executor or formal verifier. Formatting, comments, naming and cross-contract behavior can cause false positives and false negatives.
+- A `delegatecall` match does not prove attacker control of its target. A transfer without a recognized modifier is not necessarily unauthorized. A callback fixture contains attack-side code, which does not establish a defect in a victim contract.
+- The delegatecall fixture intentionally preserves compiler-incompatible syntax. No compilation success is implied; repaired variants must be separate attributed files.
+- Three models review the same source independently, but their errors can remain correlated. Agreement is not proof, and more votes do not establish a calibrated probability or a measured accuracy gain.
+- LOW, MEDIUM and HIGH agreement mean support from one, two and three distinct models respectively. These levels are separate from proposed vulnerability severity. A model that returns no finding has not explicitly refuted another model's finding.
+- Deterministic consolidation uses canonical weakness and source location. Differently located descriptions of one defect may remain separate; overlapping claims may still describe different mechanisms. Human review of the retained member findings is necessary.
+- Consensus keeps the highest proposed severity among supporting findings and flags disagreements. This conservative display rule is not a validated impact assessment or loss estimate.
+- Source binding verifies that an excerpt exists at the stated lines. It does not validate the explanation, establish reachability, prove an exploit or confirm that the recommended repair is correct.
+- The web workflow runs three Bedrock model reviews and an application orchestrator. It does not run a fourth adjudicating model, managed Bedrock Agents, a compiler, Slither, dependency resolution, bytecode analysis or on-chain state analysis.
+- A failed model is excluded from voting and disclosed as incomplete coverage. If all fail, there is no model analysis result. Empty successful findings, a partial run and an all-failed run do not establish contract safety.
+- Model access requires an authorized visitor-owned Bedrock key. Saving a syntactically valid key does not verify AWS access. Model availability, account permissions, quotas and response times can differ from mocked tests.
+- The public route has fixed AWS routing and per-instance limits. It has no application accounts, distributed rate limits, durable jobs or retention service. The optional Python service remains a separate loopback-only, single-model workflow.
+- Historical taxonomy/confidence tags in inherited modules are retained for provenance, not published as validated SWC/OWASP mappings. The new canonical weakness groups are an application taxonomy rather than an external standards certification.
+- The five inherited fixtures are demonstration/regression cases, not an independent evaluation set. Expected rule presence is not precision/recall. Recorded reference timestamps describe report generation, not the visitor's current time.
+- Asset custody, upgrade governance, operational key management, economic assumptions and business impact need additional context and qualified review. The platform analyzes supplied source and generates candidates for investigation.
+- Automated transport and orchestration tests use mocked responses. They do not verify real DTCC credentials or demonstrate model quality. Chromium browser checks, including mobile viewports, do not certify native Safari/Firefox or every macOS environment.

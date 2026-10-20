@@ -1,6 +1,88 @@
 import { test, expect } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import cases from "../src/generated/cases.json";
+import type { ReviewFinding } from "../src/generated/review";
+import { BEDROCK, BEDROCK_MODELS } from "../src/lib/bedrock-config";
+import { buildCouncilReport, type ModelRun } from "../src/lib/orchestration";
+import { analyzeStatic } from "../src/lib/static-analysis";
+
+async function councilFixture(
+  contributions: (number[] | null)[] = [[0], [0], [0]],
+) {
+  const { filename, source } = cases[0].report.input;
+  const baseline = await analyzeStatic(filename, source);
+  const findings: ReviewFinding[] = baseline.candidates.map((finding) => ({
+    title: finding.title,
+    category: (
+      {
+        "SC-001": "reentrancy",
+        "SC-005": "tx-origin",
+        "SC-002": "unchecked-call",
+      } as Record<string, string>
+    )[finding.rule_id],
+    proposed_severity: finding.proposed_severity,
+    rationale: finding.rationale,
+    recommendation: finding.recommendation,
+    evidence: finding.evidence,
+  }));
+  const models: ModelRun[] = BEDROCK_MODELS.map((model, index) => ({
+    model_id: model.id,
+    label: model.label,
+    status: contributions[index] === null ? "failed" : "succeeded",
+    elapsed_ms: 42,
+    error:
+      contributions[index] === null
+        ? {
+            code: "model_unavailable",
+            detail: "This model is unavailable for the supplied account.",
+          }
+        : null,
+    review:
+      contributions[index] === null
+        ? null
+        : {
+            provider: "aws-bedrock",
+            model_id: model.id,
+            region: BEDROCK.region,
+            protocol: BEDROCK.protocol,
+            source_sha256: baseline.source_sha256,
+            created_at: new Date().toISOString(),
+            elapsed_ms: 42,
+            input_tokens: 100,
+            output_tokens: 50,
+            summary: `Synthetic independent review from ${model.label}.`,
+            findings: contributions[index]!.map(
+              (findingIndex, observationIndex) => ({
+                ...findings[findingIndex],
+                title:
+                  contributions[index]!.indexOf(findingIndex) ===
+                  observationIndex
+                    ? findings[findingIndex].title
+                    : `${findings[findingIndex].title} (alternate observation)`,
+                // Retain a real severity disagreement without changing source evidence.
+                proposed_severity:
+                  index === 1 && findingIndex === 0
+                    ? "MEDIUM"
+                    : findings[findingIndex].proposed_severity,
+              }),
+            ),
+          },
+  }));
+  return { baseline, council: await buildCouncilReport(models, source, 50) };
+}
+
+async function runApi(page: import("@playwright/test").Page) {
+  await apiMode(page);
+  await page
+    .getByRole("button", { name: "Run API analysis", exact: true })
+    .click();
+}
+
+async function exportedJson(page: import("@playwright/test").Page) {
+  const pending = page.waitForEvent("download");
+  await page.getByRole("button", { name: jsonButton }).click();
+  return JSON.parse(await readFile((await (await pending).path())!, "utf8"));
+}
 
 const production = "http://127.0.0.1:3100";
 const jsonButton = "Download JSON report";
@@ -250,7 +332,11 @@ test("public connection accepts a memory-only key without contacting AWS or loca
   await expect(
     page.getByLabel("Bedrock API key", { exact: true }),
   ).toHaveAttribute("type", "password");
-  await expect(page.getByText("GPT-6 Astra", { exact: true })).toBeVisible();
+  for (const model of BEDROCK_MODELS) {
+    await expect(
+      page.getByRole("dialog").getByText(model.label, { exact: true }),
+    ).toBeVisible();
+  }
   await page.screenshot({
     path: testInfo.outputPath("web-bedrock-connection.png"),
     fullPage: false,
@@ -317,8 +403,17 @@ test("API failures retain clearly identified static results", async ({
     page.getByRole("region", { name: /Findings/ }).getByRole("alert"),
   ).toContainText("Cannot reach the analysis service");
   await expect(page.getByRole("button", { name: jsonButton })).toBeEnabled();
-  await expect(page.locator(".model-summary")).toHaveCount(0);
+  await expect(page.locator(".consensus-summary")).toHaveCount(0);
+  await page
+    .getByRole("group", { name: "Result source" })
+    .getByRole("button", { name: /^Static baseline/ })
+    .click();
   await expect(page.locator(".finding")).toHaveCount(3);
+  await expect(page.locator(".finding-origin")).toHaveText([
+    "Static",
+    "Static",
+    "Static",
+  ]);
 });
 
 test("schema-invalid API response is not accepted", async ({ page }) => {
@@ -332,100 +427,300 @@ test("schema-invalid API response is not accepted", async ({ page }) => {
     .click();
   await expect(
     page.getByRole("region", { name: /Findings/ }).getByRole("alert"),
-  ).toContainText("Invalid Bedrock report");
-  await expect(page.locator(".model-summary")).toHaveCount(0);
+  ).toContainText("Invalid orchestration report");
+  await expect(page.locator(".consensus-summary")).toHaveCount(0);
 });
 
-test("validated model review and export preserve static evidence", async ({
+test("three independent reviews consolidate once, retain contributions, and export separate static evidence", async ({
   page,
-  request,
 }, testInfo) => {
-  const baseline = await (
-    await request.post("http://127.0.0.1:8000/api/audits", {
-      data: cases[0].report.input,
-    })
-  ).json();
-  const finding = baseline.candidates[0];
-  const review = {
-    provider: "aws-bedrock",
-    model_id: "us.openai.gpt-6-astra",
-    region: "us-east-1",
-    protocol: "converse",
-    source_sha256: baseline.source_sha256,
-    created_at: new Date().toISOString(),
-    elapsed_ms: 42,
-    input_tokens: 100,
-    output_tokens: 50,
-    summary: "Mocked integration test: inspect the external call.",
-    findings: [
-      {
-        title: finding.title,
-        category: finding.category,
-        proposed_severity: finding.proposed_severity,
-        rationale: finding.rationale,
-        recommendation: finding.recommendation,
-        evidence: finding.evidence,
-      },
-    ],
-  };
+  const { council } = await councilFixture([[0, 0], [0], [0]]);
   await page.route("**/api/reviews", (route) =>
-    route.fulfill({
-      json: {
-        schema_version: "1.0.0",
-        static_report: baseline,
-        model_review: review,
-      },
-    }),
+    route.fulfill({ json: council }),
   );
   await page.goto(production);
-  await apiMode(page);
-  await page
-    .getByRole("button", { name: "Run API analysis", exact: true })
-    .click();
-  await expect(page.locator(".model-summary")).toContainText(review.summary);
-  await expect(page.locator(".finding")).toHaveCount(4);
-  const pending = page.waitForEvent("download");
-  await page.getByRole("button", { name: jsonButton }).click();
-  const result = JSON.parse(
-    await readFile((await (await pending).path())!, "utf8"),
+  await runApi(page);
+  await expect(
+    page.getByText("Three-model review complete", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".consensus-summary")).toContainText(
+    "3 / 3 reviews completed",
   );
+  await expect(page.locator(".finding")).toHaveCount(1);
+  await expect(page.locator(".confidence-pill")).toHaveText("HIGH CONFIDENCE");
+  await expect(
+    page.getByText("Severity differs across models", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".finding-origin")).toHaveText("3 / 3 models");
+  await expect(page.locator(".council-model.succeeded")).toHaveCount(3);
+  await expect(page.locator(".model-perspective")).toHaveCount(3);
+  for (let index = 0; index < BEDROCK_MODELS.length; index++) {
+    const perspective = page.locator(".model-perspective").nth(index);
+    await perspective.locator("summary").click();
+    await expect(perspective.locator(".model-observation")).toHaveCount(
+      index === 0 ? 2 : 1,
+    );
+    await expect(perspective.locator(".evidence").first()).toContainText(
+      council.findings[0].evidence.excerpt,
+    );
+  }
+  const result = await exportedJson(page);
+  expect(result.schema_version).toBe("2.0.0");
   expect(result.static_report.candidates).toHaveLength(3);
-  expect(result.model_review.findings).toHaveLength(1);
   expect(result.static_report.execution).toBe("browser");
+  expect(result.council).toEqual(council);
+  expect(result.council.findings).toHaveLength(1);
+  expect(result.council.findings[0].members).toHaveLength(4);
+  expect(result.council.findings[0].supporting_models).toHaveLength(3);
   expect(JSON.stringify(result)).not.toContain("SYNTHETIC_BROWSER_TEST");
+
+  const markdownDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download Markdown report" }).click();
+  const markdown = await readFile(
+    (await (await markdownDownload).path())!,
+    "utf8",
+  );
+  expect(markdown).toContain(
+    "Severity: HIGH | Confidence: HIGH | Agreement: 3/3",
+  );
+  expect(markdown).toContain("Severity disagreement: yes");
+  expect(markdown).toContain("## Independent static baseline");
+  expect(markdown).toContain("#### Model contributions");
+  for (const model of BEDROCK_MODELS)
+    expect(markdown).toContain(model.label.replaceAll(".", "\\."));
+  expect(markdown).toContain(council.source_sha256);
+  expect(markdown).not.toContain("SYNTHETIC_BROWSER_TEST");
+
+  const views = page.getByRole("group", { name: "Result source" });
+  await views.getByRole("button", { name: /^Static baseline/ }).click();
+  await expect(page.locator(".finding")).toHaveCount(3);
+  await expect(page.locator(".finding-origin")).toHaveText([
+    "Static",
+    "Static",
+    "Static",
+  ]);
+  await expect(
+    page.getByLabel("Consensus confidence", { exact: true }),
+  ).toHaveCount(0);
+  await views.getByRole("button", { name: /^Model consensus/ }).click();
+  await expect(page.locator(".finding")).toHaveCount(1);
+  await expect
+    .poll(() =>
+      page.locator(".findings-content").evaluate((node) => node.scrollTop),
+    )
+    .toBe(0);
+  await views.getByRole("button", { name: /^Model consensus/ }).focus();
+  await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({
-    path: testInfo.outputPath("api-review-test.png"),
+    path: testInfo.outputPath("api-council-review.png"),
     fullPage: true,
   });
+  if (testInfo.project.name === "desktop") {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({
+      path: testInfo.outputPath("api-council-1280x720.png"),
+      fullPage: true,
+    });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  }
 });
 
-test("cancel or edit during a pending request cannot restore stale results", async ({
+test("partial model failure keeps two validated reviews with medium confidence and explicit coverage", async ({
   page,
 }) => {
-  let release: () => void = () => {};
-  const waiting = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await page.route("**/api/reviews", async (route) => {
-    await waiting;
-    await route.fulfill({ json: { schema_version: "1.0.0" } }).catch(() => {});
-  });
-  await page.goto("/");
-  await apiMode(page);
+  const { council } = await councilFixture([[0], [0], null]);
+  await page.route("**/api/reviews", (route) =>
+    route.fulfill({ json: council }),
+  );
+  await page.goto(production);
+  await runApi(page);
+  await expect(
+    page.getByText("Partial model coverage", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".consensus-summary")).toContainText(
+    "2 / 3 reviews completed",
+  );
+  await expect(page.locator(".consensus-summary")).toContainText(
+    "Partial coverage",
+  );
+  await expect(page.locator(".finding")).toHaveCount(1);
+  await expect(page.locator(".confidence-pill")).toHaveText(
+    "MEDIUM CONFIDENCE",
+  );
+  const unavailable = page.locator(".council-model.failed");
+  await expect(unavailable).toHaveCount(1);
+  await expect(unavailable.locator("summary")).toContainText(
+    BEDROCK_MODELS[2].label,
+  );
+  await unavailable.locator("summary").click();
+  await expect(unavailable).toContainText(
+    "This model is unavailable for the supplied account.",
+  );
   await page
-    .getByRole("button", { name: "Run API analysis", exact: true })
+    .getByRole("button", { name: "Connection settings", exact: true })
+    .click();
+  await expect(page.locator(".connection-status")).toContainText(
+    "2 of 3 models returned a valid review",
+  );
+  await page.getByRole("button", { name: "Return to workspace" }).click();
+  const result = await exportedJson(page);
+  expect(result.council.status).toBe("partial");
+  expect(result.council.models[2].review).toBeNull();
+  expect(result.council.findings[0].agreement).toBe(2);
+});
+
+test("all model failures are unavailable, never presented as a clean review", async ({
+  page,
+}) => {
+  const { council } = await councilFixture([null, null, null]);
+  await page.route("**/api/reviews", (route) =>
+    route.fulfill({ json: council }),
+  );
+  await page.goto(production);
+  await runApi(page);
+  await expect(
+    page.getByRole("heading", { name: "Model review unavailable" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Model review failed", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".consensus-summary")).toContainText(
+    "0 / 3 reviews completed",
+  );
+  await expect(page.locator(".council-model.failed")).toHaveCount(3);
+  await expect(
+    page.getByRole("heading", { name: "No candidates flagged" }),
+  ).toHaveCount(0);
+  await expect(page.locator(".finding")).toHaveCount(0);
+  const result = await exportedJson(page);
+  expect(result.council.status).toBe("failed");
+  expect(result.static_report.candidates).toHaveLength(3);
+  await page
+    .getByRole("button", { name: "View static baseline", exact: true })
+    .click();
+  await expect(page.locator(".finding")).toHaveCount(3);
+});
+
+test("confidence and severity filters operate on consolidated findings without counting duplicate votes", async ({
+  page,
+}) => {
+  const { council } = await councilFixture([[0, 0, 1, 2], [0, 1], [0]]);
+  await page.route("**/api/reviews", (route) =>
+    route.fulfill({ json: council }),
+  );
+  await page.goto(production);
+  await runApi(page);
+  await expect(page.locator(".finding")).toHaveCount(3);
+  const confidence = page.getByLabel("Consensus confidence", { exact: true });
+  for (const [level, count, agreement] of [
+    ["HIGH", 1, 3],
+    ["MEDIUM", 1, 2],
+    ["LOW", 1, 1],
+  ] as const) {
+    await confidence.selectOption(level);
+    await expect(page.locator(".finding")).toHaveCount(count);
+    await expect(page.locator(".finding-origin")).toHaveText(
+      `${agreement} / 3 models`,
+    );
+  }
+  await page
+    .getByRole("group", { name: "Severity filter" })
+    .getByRole("button", { name: /High/ })
     .click();
   await expect(
-    page.getByRole("button", { name: "Cancel analysis" }),
+    page.getByRole("heading", { name: "No matching findings" }),
   ).toBeVisible();
-  await page
-    .getByRole("textbox", { name: "Contract filename" })
-    .fill("New.sol");
-  release();
-  await expect(page.getByRole("button", { name: jsonButton })).toBeDisabled();
-  await expect(page.locator(".finding")).toHaveCount(0);
-  await expect(page.locator(".model-summary")).toHaveCount(0);
+  await page.getByRole("button", { name: "Clear filters" }).click();
+  await expect(confidence).toHaveValue("ALL");
+  await expect(page.locator(".finding")).toHaveCount(3);
 });
+
+for (const action of [
+  "source edit",
+  "filename edit",
+  "cancel",
+  "clear key",
+] as const) {
+  test(`${action} during a pending request cannot restore stale model results`, async ({
+    page,
+  }) => {
+    const { council } = await councilFixture();
+    let release: () => void = () => {};
+    let requested: () => void = () => {};
+    let settled: () => void = () => {};
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      requested = resolve;
+    });
+    const finished = new Promise<void>((resolve) => {
+      settled = resolve;
+    });
+    await page.route("**/api/reviews", async (route) => {
+      requested();
+      await waiting;
+      await route.fulfill({ json: council }).catch(() => {});
+      settled();
+    });
+    await page.goto(production);
+    await runApi(page);
+    await entered;
+    await expect(
+      page.getByRole("button", { name: "Cancel analysis" }),
+    ).toBeVisible();
+    if (action === "source edit") {
+      await page
+        .getByRole("button", { name: "Edit source", exact: true })
+        .click();
+      await page
+        .getByRole("textbox", { name: "Solidity source", exact: true })
+        .fill("pragma solidity ^0.8.20;\ncontract Changed {}");
+    } else if (action === "filename edit") {
+      await page
+        .getByRole("textbox", { name: "Contract filename" })
+        .fill("Changed.sol");
+    } else if (action === "cancel") {
+      await page.getByRole("button", { name: "Cancel analysis" }).click();
+    } else {
+      await page
+        .getByRole("button", { name: "Connection settings", exact: true })
+        .click();
+      await page
+        .getByRole("button", { name: "Clear key", exact: true })
+        .click();
+      await expect(page.locator(".connection-status")).toContainText(
+        "No API key connected",
+      );
+      await page.getByRole("button", { name: "Return to workspace" }).click();
+    }
+    release();
+    await finished;
+    await expect(page.locator(".consensus-summary")).toHaveCount(0);
+    await expect(page.locator(".council-model.succeeded")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Cancel analysis" }),
+    ).toHaveCount(0);
+    if (action.endsWith("edit")) {
+      await expect(
+        page.getByRole("button", { name: jsonButton }),
+      ).toBeDisabled();
+      await expect(page.locator(".finding")).toHaveCount(0);
+    } else {
+      await expect(
+        page.getByRole("button", { name: jsonButton }),
+      ).toBeEnabled();
+      const result = await exportedJson(page);
+      expect(result.council).toBeUndefined();
+      expect(result.candidates).toHaveLength(3);
+    }
+  });
+}
 
 test("documentation is a real same-site PDF and setup stays on site", async ({
   page,

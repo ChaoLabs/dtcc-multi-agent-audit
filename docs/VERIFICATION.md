@@ -98,3 +98,54 @@ The final UI uses locally served Manrope and IBM Plex Mono packages. Fonts, logo
 - The one-click patch installer is checked for normal application, identical reruns and conflict rejection without partial mutation.
 
 No real AWS credential was used in these tests. Live Bedrock permissions, model availability and real model results remain unverified by the automated suite. No GitHub push, hosted Actions run or Vercel deployment is claimed. Vercel firewall settings, third-party logging and distributed rate limits are outside the tested per-instance request guard.
+
+## Three-model evidence orchestration — 2026-10-20 UTC
+
+Base: GitHub `main` commit `c675c492dde381ef5fe601393fa2393d14a8eb04`, matching the supplied repository ZIP. The update is delivered as one reversible installer; no remote commit or deployment was performed during preparation.
+
+- Python regression suite: **102 passed**. Ruff and generated showcase/schema drift checks passed. The retained Python service is still the optional legacy single-model path.
+- Standalone web unit/transport suite: **77 passed**. This includes three-request concurrency, per-model failures, partial/all-failed runs, fixed endpoints, cancellation, source/evidence validation, duplicate votes, distinct operation sites, category aliases, inherited-property input names, consistency validation and credential isolation. These tests do not contact AWS.
+- Browser workspace suite: **44 passed**, comprising 22 workflows under desktop and mobile Chromium projects. Checks cover static analysis, key memory and clearing, current-source invalidation, model confidence, partial/all-failed outcomes, severity disagreement, original contributions, JSON/Markdown export and responsive controls. Successful model responses are explicit fixtures, not live AI results.
+- Real local production HTTP route checks verify POST validation and GET rejection before contacting AWS. Build includes the dynamic `/api/reviews` function. Web lint, TypeScript, formatting and production build pass.
+- Desktop and mobile screenshots were inspected. The short desktop API layout now leaves a usable reading area and uses page flow; explicit Focus mode retains the fixed workspace. Source evidence navigation and result-view scrolling remain functional.
+- The platform overview PDF has five pages. All five were rendered and visually inspected; script lint/format and compilation checks pass.
+- Installer checks cover a clean checkout of the reviewed base, compatibility-only operation, byte-for-byte result verification, identical reapplication, and rejection of conflicting local edits without mutation. Backups are stored outside the repository. It does not install dependencies, create credentials, commit, push or deploy.
+
+Runtime: Node 24.19.0 and Python 3.12 on Linux. Browser checks use Playwright 1.58.2 with a test-only Chromium 153.0.8010.0 executable, because the default browser download returned an invalid archive in this environment. This browser package is outside the repository and is not shipped. Mobile coverage is viewport emulation, not native Safari/iOS verification.
+
+Official AWS model cards were checked for the three US inference profile IDs and Converse support. **No live DTCC key, model entitlement, billed Bedrock response, production Vercel upgrade, or measured accuracy gain was verified.** Account acceptance must run with a newly generated key on the user's deployment. Lexical consolidation is conservative and can leave semantic duplicates unresolved; source agreement and model agreement do not prove exploitability.
+
+## Grok report-format repair — 2026-10-20 UTC
+
+A user-provided live screenshot showed accepted GPT-6.1 Sol and Claude Opus 5.5 reviews, with Grok rejected by the local report-schema check. That error occurs after a successful AWS response, completed generation and JSON parsing. The screenshot does not establish the specific rejected field; raw model output was not supplied.
+
+Grok now receives the documented Converse JSON Schema output configuration, derived from the generated report contract using provider-supported structural keywords. Its prompt also includes the full contract. Local length, count and source-evidence checks remain strict. Schema failures expose only recognized field paths and trusted constraint descriptions. No automatic retries, model substitutions or additional calls were added.
+
+- Standalone unit/transport suite: **90 passed** (52 transport and 38 orchestration checks), including 13 new structured-output and sanitized-diagnostic regressions.
+- ESLint, TypeScript, Prettier, production build and patch whitespace checks passed.
+- Installer verification reconstructs the installed v1.1 state, checks exact resulting file bytes, preserves unrelated files, supports identical reapplication and rejects later local conflicts before writing.
+- Tests use synthetic responses and do not call AWS. The repaired native schema request still requires live account verification. Provider grammar compilation can add first-use latency within the existing deadline.
+
+## Server-owned evidence validation — 2026-10-20 UTC
+
+A later live screenshot identified Claude's precise local validation failure: `findings[0].evidence.validation` did not equal `source-bound`. GPT and Grok completed in that run. This is a report-contract failure after AWS returned completed JSON, not evidence of an expired key or an upstream outage. The actual annotation value was not supplied and is not assumed.
+
+Models now supply only the evidence lines and excerpt. The server ignores a legacy validation annotation, strictly validates all remaining report fields, checks exact source binding and duplicates, and only then assigns `source-bound`. Credential-echo rejection runs before normalization, including decoded JSON content. The public report/export schema is unchanged. No evidence repair, dropped findings, automatic retries or model substitution was introduced.
+
+All three fixed model requests now carry the same native JSON Schema and complete format instructions. GPT's documented Converse strict-format flag is applied only to GPT. Current official model cards were checked for structured-output support; local mocks cannot verify account-level acceptance.
+
+- Unit/transport suite: **100 passed** (62 transport and 38 orchestration checks). Ten added regressions cover Claude annotation variants, false evidence despite a claimed validation marker, and credential echoes inside ignored metadata.
+- ESLint, TypeScript, Prettier and Next.js production build passed. The shared evidence validator retains exact excerpt matching, duplicate detection, source bounds and the 12-line maximum, and explicitly checks safe integer line numbers.
+- Installer verification reconstructs the installed three-model plus Grok-fix state, checks compatibility without writes, applies the eight-file change, compares exact resulting bytes, confirms identical reapplication and rejects conflicting edits before writing. No dependencies or UI layout changed.
+- Tests use synthetic model responses. No live AWS credential or billed model call was used for this repair; a live run on the user's account is still required. No remote commit or deployment was performed.
+
+## Platform documentation refresh — 2026-10-20 UTC
+
+The platform brief is now six pages, aligned with the implemented three-model workflow. It corrects the earlier statement that models receive static findings: all three receive the source independently, and the static baseline is separate. The brief explains server-owned evidence validation, conservative reconciliation, agreement versus severity, partial coverage, exports and browser-based connection. It includes clickable platform, guide and repository links without a project timeline or claimed accuracy improvement.
+
+- All six pages were rendered and visually inspected. Text extraction checks the exact project title, three model names, key workflow and agreement semantics. Page size, embedded fonts, section bookmarks and link destinations were checked.
+- The authoring script passes Python compilation, Ruff lint and formatting. Two consecutive builds produce identical PDF bytes. The prebuilt PDF remains included in the repository; users do not need ReportLab to apply the patch or run the website.
+- The production server serves the updated same-site PDF with the expected content type and exact file bytes; existing Documentation links keep their original path.
+- The four-file installer was checked against the previous three-model documentation state with both transport fixes applied. Compatibility-only operation, exact application, unchanged unrelated files, identical reruns and conflict rejection before writes were verified.
+
+This update changes only the PDF, its authoring script and documentation records. No application logic, model request, dependency, GitHub remote or Vercel deployment was changed.

@@ -1,44 +1,60 @@
-# Architecture — portable analysis workspace
+# Architecture
 
-## Current design
+## Analysis paths
 
-The Next.js application runs a bounded TypeScript port of the inherited 15-rule scanner in the browser. The production Vercel build and local development UI both support source editing, uploads, rule analysis and report export without a backend. Source stays in memory until explicitly downloaded or sent for API review.
+The Next.js application provides two independent analysis paths. Static analysis runs a bounded TypeScript port of the inherited 15-rule scanner in the browser. API analysis sends one source snapshot and a visitor-owned Bedrock key to the same-origin `POST /api/reviews` route.
 
-The website posts source and an explicitly entered visitor key to its same-origin Next.js `POST /api/reviews` route. It fixes the AWS endpoint, region and GPT-6 Astra inference profile, recomputes static candidates, and returns only a validated `model_review`. The browser retains its own static baseline and combines the two only after source/provenance validation. No client-supplied candidates or destination URL are accepted.
+The server dispatches three concurrent Converse requests to GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7 through fixed US inference profiles in `us-east-1`. All receive the same review task, numbered source lines, full report-format contract and a provider-native JSON Schema output configuration. GPT additionally requires its documented strict-format flag. They receive no static candidates, peer findings or credentials in their prompts. No tool execution, source compilation or external retrieval is available to the models.
 
-The optional local FastAPI service retains the original Python baseline and adds a single-model Bedrock review adapter. `/api/audits` remains available for Python static analysis and scanner parity checks. `/api/config` exposes configuration status without credentials. `/api/reviews` runs the Python baseline and one Bedrock review.
+Each response is validated before entering the application orchestrator. The orchestrator groups compatible findings by canonical weakness and evidence location, counts distinct supporting models and preserves membership in the original reviews. It performs no additional inference. This is application-managed orchestration, not an Amazon Bedrock managed Agents deployment. See [the algorithm and reporting semantics](ORCHESTRATION.md).
 
-The retained Python API is loopback-only, with trusted-host, Origin/CORS and 64 KB request-body checks. Source limits are 48,000 UTF-8 bytes, 1,200 lines and 2,000 Unicode characters per line. Browser validation applies the same limits. There is no compiler, import resolution, subprocess, blockchain write or source database.
+## Evidence and report contracts
 
-## Evidence contracts
+The original static report schema remains separate from the version **2.0.0** multi-model response/export. Static candidate IDs bind source, engine version, rule and location. Browser validation checks source hash, report provenance and exact source excerpts.
 
-Python models generate JSON Schema and TypeScript types. The browser checks schema, source hash, candidate identity and exact source excerpts. Static candidate IDs bind the source, engine, version, rule and location. The browser engine has a distinct `browser-static-rules` identity and `browser` execution value; existing recorded Python reports keep their actual metadata.
+A multi-model run records all three model identities, success/failure outcomes, accepted original reviews, available token usage and elapsed times. The consensus report retains its member references, model support, agreement level and severity disagreement. JSON and Markdown exports preserve this information. Raw AWS payloads and hidden reasoning blocks are not exported as findings.
 
-The browser scanner ports heuristic behavior, including known limitations. Tests compare all reference case rule locations/severities and all 15 rule families with the real Python API. This establishes regression coverage, not vulnerability accuracy or full equivalence for every possible Unicode/formatting input.
+A model response must have the expected JSON shape, allowed severity values and bounded findings. Source excerpts must match the submitted snapshot at the claimed locations. Invalid, truncated or unbound output fails that model's review. Passing these checks establishes structural grounding, not the correctness of a vulnerability explanation.
 
-An enhanced export is an envelope containing `static_report` and `model_review`. Static findings are retained. Model findings are separately attributed and must contain exact source evidence. Invalid, truncated or unbound model output rejects that review. Agreement, valid JSON and exact source location do not establish semantic correctness.
+Source-binding metadata belongs to the server. Incoming evidence contains only start/end lines and the excerpt. After checking the full response for credential echoes, the server removes any legacy model-supplied `evidence.validation` annotation, validates the remaining content strictly, checks actual source binding and then assigns `source-bound`. It never repairs evidence or silently drops a finding. The same evidence validator is used when accepting the final report in the browser.
 
-## Request lifecycle
+The browser independently validates received results and their binding to the current source before display or export. Static findings are never counted as a model vote.
 
-Source/filename changes and case changes advance a request generation, abort the active browser request and invalidate previous reports/exports. Late responses cannot restore stale data. A completed static report remains available when the subsequent model request fails. That result is explicitly labelled static, and no failed or pending model result is exported.
+## Failure and lifecycle behavior
 
-Web Bedrock requests are bounded to one model call, 8,192 output tokens, 110 seconds and 256 KB of upstream response. Request bodies are limited to 128 KB with a 10-second read deadline; source limits remain 48 KB. The Next.js function allows 120 seconds and the browser waits at most 125 seconds. Redirects, automatic retries and model tools are disabled. A per-instance limiter permits one concurrent call and six attempts per minute per key hash, four simultaneous calls overall, and at most 1,000 retained hashes. Expired inactive entries are discarded. These limits are not distributed across Vercel instances. The separate Python adapter retains its original 4,096-token / 55-second / 128-KB limits. Cancelling a browser wait does not guarantee cancellation or non-billing of a request already received by AWS.
+Three successful reviews constitute complete model coverage. One or two successful reviews produce an explicitly partial run; only accepted findings participate in consolidation. Three failures produce a failed run, not a zero-finding safety result. A successful model with an empty findings array is recorded as successful, but absence of a claim is not an explicit rebuttal of another model's claim.
 
-Web credentials live in a browser ref, an initially masked input while editing, and the active server request. They are sent in a JSON POST body over HTTPS on Vercel, never in URLs, cookies or shared process environment. Closing the dialog clears the unsaved input; refresh, unmount or Clear key drops the active browser reference. Replacement and clearing abort active requests and invalidate late results. No credential database, localStorage, logging, environment fallback or report field is implemented. Runtime/provider memory disposal, browser extensions and hosting-level request logging are outside those application guarantees. See [Bedrock setup](BEDROCK.md).
+Changing source, filename or reference case invalidates results and aborts the browser request. Replacing or clearing the key also prevents late responses from overwriting newer state. Static results remain independently available after API failure. Cancellation stops the application's wait; it cannot guarantee that AWS has stopped processing or billing a request already received.
 
-## Public hosting
+## Resource bounds
 
-Vercel needs only the web project. Each paid model request requires the caller's own key; no deployment-owned AWS credential is provisioned or used as a fallback. Same-origin and JSON checks guard the browser boundary, but are not account authentication. Browser static analysis remains fully available. Fonts and logo are served as local assets; no external font service is required.
+| Boundary | Limit |
+| --- | --- |
+| Solidity input | 48,000 UTF-8 bytes; 1,200 lines; 2,000 characters per line |
+| Incoming request | 128,000 bytes; 10-second body-read deadline |
+| Model calls | Three parallel calls; no automatic retries or fallback models |
+| Model output | 8,192 tokens and 256,000 response bytes per model |
+| Deadlines | 180 seconds per model; 210 seconds overall server request |
+| Next.js function | 240 seconds; Vercel Fluid compute |
 
-Vercel compute is billed to the deployment owner even when visitors provide their own AWS keys. Use hosting firewall/rate-limit controls and monitor usage when making the URL public. A future sponsor-funded multi-user API needs application authentication, distributed quotas, per-user budgets, durable jobs and retention decisions; this bring-your-own-key route does not implement those services.
+The per-instance guard permits one active analysis and six attempts per minute per key hash, with four active analyses overall and at most 1,000 retained hashes. Each analysis can issue three model calls, so four active analyses can represent twelve upstream requests. Inactive expired entries are discarded. These guards are not distributed user quotas and do not authenticate a visitor.
 
-## Semester direction
+## Credentials and hosting
 
-The three-model architecture and orchestration role are not implemented. Planned model baselines should use identical source/scope and preserve each model's original candidates. Orchestration should reconcile conflicts with evidence, while retaining unresolved claims. A reviewed held-out dataset and controlled comparisons determine whether reliability improves.
+The key exists in tab memory, a masked input while editing, and the active server request. It travels in an HTTPS POST body to the site's function and in authorization headers to AWS. It never enters model prompts, URLs, cookies, browser persistence, a source database, shared process environment or application logs. No server-owned credential fallback is configured. Refresh or Clear key drops the active browser reference; closing the dialog clears unsaved key input.
+
+These are application storage guarantees. Hosting request logging, AWS account invocation logging, browser extensions and provider memory disposal have separate controls. The deployment owner pays Vercel compute; the visitor's AWS account pays model usage. The public route is a bring-your-own-key service without application accounts, durable jobs, distributed quotas or sponsor-funded model access.
+
+## Retained Python service
+
+`services/audit-api` remains an optional loopback-only FastAPI service for the original Python scanner, parity checks and earlier single-model review workflow. Its `/api/audits`, `/api/config` and `/api/reviews` endpoints are separate from the current Next.js route. The website does not call it. Legacy Python transport limits and schema generation do not define the web multi-model contract.
+
+## Evaluation boundary
+
+Regression tests with mocked model responses can establish dispatch, validation, consolidation and failure behavior. They cannot establish actual AWS account permissions, real model latency, or improved detection accuracy. The five teaching fixtures are not a held-out evaluation corpus. Compiler-backed validation, reviewed labels, benign controls and single-model versus multi-model comparisons remain required research work.
 
 ## References
 
-- [Next.js deployment](https://nextjs.org/docs/app/getting-started/deploying)
 - [Bedrock Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html)
-- [Bedrock Messages API](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.html)
+- [Bedrock API keys](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html)
 - [Managed Bedrock multi-agent collaboration](https://docs.aws.amazon.com/bedrock/latest/userguide/agents-multi-agent-collaboration.html)

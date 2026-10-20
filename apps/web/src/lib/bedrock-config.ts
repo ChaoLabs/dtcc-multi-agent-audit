@@ -1,20 +1,20 @@
 // Public connection settings; credentials are never part of this module.
 export const BEDROCK = {
-  model: "us.openai.gpt-6-astra",
-  label: "GPT-6 Astra",
+  model: "us.openai.gpt-6.1-sol",
+  label: "GPT-6.1 Sol",
   region: "us-east-1",
   protocol: "converse" as const,
 };
 
 export const BEDROCK_MODELS = [
   {
-    id: "us.openai.gpt-6-astra",
-    label: "GPT-6 Astra",
+    id: "us.openai.gpt-6.1-sol",
+    label: "GPT-6.1 Sol",
     provider: "OpenAI",
   },
   {
-    id: "global.anthropic.claude-sonnet-5-5",
-    label: "Claude Sonnet 5.5",
+    id: "us.anthropic.claude-opus-5-5",
+    label: "Claude Opus 5.5",
     provider: "Anthropic",
   },
   {

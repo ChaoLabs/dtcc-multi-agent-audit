@@ -191,12 +191,27 @@ export async function validateModelReview(
     !Number.isFinite(Date.parse(review.created_at))
   )
     throw new Error("Bedrock review does not match this source.");
+  validateReviewEvidence(review.findings, source);
+  return value;
+}
+
+/** Check evidence against the source before assigning or accepting its binding. */
+export function validateReviewEvidence(
+  findings: readonly {
+    title: string;
+    evidence: { line_start: number; line_end: number; excerpt: string };
+  }[],
+  source: string,
+): void {
   const lines = sourceLines(source),
     seen = new Set<string>();
-  for (const item of review.findings) {
+  for (const item of findings) {
     const span = item.evidence,
       identity = `${item.title.toLowerCase()}|${span.line_start}|${span.line_end}`;
     if (
+      !Number.isSafeInteger(span.line_start) ||
+      !Number.isSafeInteger(span.line_end) ||
+      span.line_start < 1 ||
       span.line_start > span.line_end ||
       span.line_end > lines.length ||
       span.line_end - span.line_start >= 12 ||
@@ -207,5 +222,4 @@ export async function validateModelReview(
       throw new Error("Bedrock evidence does not match the source snapshot.");
     seen.add(identity);
   }
-  return value;
 }

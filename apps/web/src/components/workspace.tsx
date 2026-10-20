@@ -4,16 +4,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import type { AuditReport } from "@/generated/report";
-import type { ModelReview } from "@/generated/review";
+import { downloadReport, validateResponse } from "@/lib/report";
 import {
-  downloadReport,
-  validateEnhanced,
-  validateResponse,
-} from "@/lib/report";
+  validateCouncil,
+  type CouncilReport,
+  type ConsensusFinding,
+} from "@/lib/orchestration";
+import { downloadCouncilReport } from "@/lib/council-export";
 import { analyzeStatic, validateInput } from "@/lib/static-analysis";
-import { BEDROCK, validateApiKey } from "@/lib/bedrock-config";
+import { BEDROCK_MODELS, validateApiKey } from "@/lib/bedrock-config";
 import { Icon } from "./icons";
 import { CodeView } from "./code-view";
+import { CouncilStatus, ConsensusEvidence } from "./review-council";
 
 type Case = {
   id: string;
@@ -32,6 +34,7 @@ type Finding = {
   recommendation: string;
   evidence: { line_start: number; line_end: number; excerpt: string };
   kind: "static" | "model";
+  consensus?: ConsensusFinding;
 };
 const repository = "https://github.com/ChaoLabs/dtcc-multi-agent-audit";
 
@@ -40,7 +43,11 @@ export default function Workspace({ cases }: { cases: Case[] }) {
   const [filename, setFilename] = useState(cases[0].report.input.filename);
   const [selected, setSelected] = useState(cases[0].id);
   const [report, setReport] = useState<AuditReport | null>(cases[0].report);
-  const [review, setReview] = useState<ModelReview | null>(null);
+  const [council, setCouncil] = useState<CouncilReport | null>(null);
+  const [resultView, setResultView] = useState<"static" | "consensus">(
+    "static",
+  );
+  const [confidence, setConfidence] = useState("ALL");
   const [mode, setMode] = useState<"static" | "api">("static");
   const [editing, setEditing] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -61,8 +68,10 @@ export default function Workspace({ cases }: { cases: Case[] }) {
   const [focusTarget, setFocusTarget] = useState<{
     line: number;
     reveal: boolean;
+    evidence?: Finding["evidence"];
   } | null>(null);
   const sourceView = useRef<HTMLDivElement>(null);
+  const findingsView = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const caseDialog = useRef<HTMLDialogElement>(null);
   const apiDialog = useRef<HTMLDialogElement>(null);
@@ -79,45 +88,72 @@ export default function Workspace({ cases }: { cases: Case[] }) {
       apiKey.current = "";
     };
   }, []);
+  useEffect(() => {
+    findingsView.current?.scrollTo({ top: 0 });
+  }, [resultView, filter, confidence, query]);
   const validReport =
     report?.input.source === source && report.input.filename === filename
       ? report
       : null;
-  const validReview =
-    validReport && review?.source_sha256 === validReport.source_sha256
-      ? review
+  const validCouncil =
+    validReport && council?.source_sha256 === validReport.source_sha256
+      ? council
       : null;
-  const findings: Finding[] = [
-    ...(validReport?.candidates.map((item) => ({
-      ...item,
-      kind: "static" as const,
-    })) ?? []),
-    ...(validReview?.findings.map((item, index) => ({
-      ...item,
-      id: `AI-${index + 1}`,
-      rule_id: `AI-${String(index + 1).padStart(3, "0")}`,
-      kind: "model" as const,
-    })) ?? []),
-  ];
+  const showConsensus = mode === "api" && resultView === "consensus";
+  const findings: Finding[] = showConsensus
+    ? (validCouncil?.findings.map((item) => ({
+        ...item,
+        rule_id: item.id,
+        kind: "model" as const,
+        consensus: item,
+      })) ?? [])
+    : (validReport?.candidates.map((item) => ({
+        ...item,
+        kind: "static" as const,
+      })) ?? []);
   const active = findings.find((item) => item.id === expanded);
   const shown = findings.filter(
     (item) =>
       (filter === "ALL" || item.proposed_severity === filter) &&
+      (!showConsensus ||
+        confidence === "ALL" ||
+        item.consensus?.confidence === confidence) &&
       (item.title + " " + item.category + " " + item.rule_id)
         .toLowerCase()
         .includes(query.toLowerCase()),
   );
+  const completedModels =
+    validCouncil?.models.filter((item) => item.status === "succeeded").length ??
+    0;
+  function exportReport(format: "json" | "md") {
+    if (!validReport) return;
+    if (validCouncil) downloadCouncilReport(validReport, format, validCouncil);
+    else downloadReport(validReport, format);
+  }
+  function changeResultView(next: "static" | "consensus") {
+    setResultView(next);
+    setFilter("ALL");
+    setConfidence("ALL");
+    setQuery("");
+    setExpanded(
+      next === "static"
+        ? (validReport?.candidates[0]?.id ?? null)
+        : (validCouncil?.findings[0]?.id ?? null),
+    );
+    setFocusTarget(null);
+  }
 
   const invalidate = useCallback(() => {
     version.current++;
     request.current?.abort();
     setBusy(false);
     setReport(null);
-    setReview(null);
+    setCouncil(null);
     setError("");
     setElapsed(null);
     setCopied(false);
     setFocusTarget(null);
+    findingsView.current?.scrollTo({ top: 0 });
   }, []);
 
   function loadCase(item: Case) {
@@ -129,6 +165,8 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     setExpanded(item.report.candidates[0]?.id ?? null);
     setEditing(false);
     setFilter("ALL");
+    setConfidence("ALL");
+    setResultView("static");
     setQuery("");
     sourceView.current?.scrollTo({ top: 0 });
     caseDialog.current?.close();
@@ -166,10 +204,15 @@ export default function Workspace({ cases }: { cases: Case[] }) {
         );
     }
   }
-  function focusCandidate(id: string, line: number, toggle = true) {
+  function focusCandidate(
+    id: string,
+    line: number,
+    toggle = true,
+    evidence?: Finding["evidence"],
+  ) {
     setExpanded(toggle && expanded === id ? null : id);
     setEditing(false);
-    setFocusTarget({ line, reveal: !toggle });
+    setFocusTarget({ line, reveal: !toggle, evidence });
   }
   useEffect(() => {
     if (!focusTarget || editing) return;
@@ -196,6 +239,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
       setBusy(false);
     }
     setMode(next);
+    changeResultView(next === "api" && validCouncil ? "consensus" : "static");
     setError("");
     if (next === "api") apiDialog.current?.showModal();
   }
@@ -206,7 +250,9 @@ export default function Workspace({ cases }: { cases: Case[] }) {
       version.current++;
       request.current?.abort();
       setBusy(false);
-      setReview(null);
+      setCouncil(null);
+      setFocusTarget(null);
+      setElapsed(null);
       setError("");
       apiKey.current = key;
       setHasKey(true);
@@ -228,7 +274,9 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     if (keyInput.current) keyInput.current.value = "";
     setHasKey(false);
     setVerified(false);
-    setReview(null);
+    setCouncil(null);
+    setFocusTarget(null);
+    setElapsed(null);
     setError("");
     setConfigError("");
   }
@@ -243,10 +291,13 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     const abort = new AbortController();
     request.current = abort;
     setBusy(true);
+    if (mode === "api") setVerified(false);
+    setResultView(mode === "api" ? "consensus" : "static");
+    setConfidence("ALL");
     setFilter("ALL");
     setQuery("");
     const start = performance.now();
-    const timer = setTimeout(() => abort.abort(), 125_000);
+    const timer = setTimeout(() => abort.abort(), 240_000);
     try {
       const baseline = await analyzeStatic(snapshot.filename, snapshot.source);
       if (stamp !== version.current || !mounted.current) return;
@@ -260,7 +311,6 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           body: JSON.stringify({
             ...snapshot,
             api_key: apiKey.current,
-            model_id: "us.openai.gpt-6-astra",
           }),
           signal: abort.signal,
           credentials: "omit",
@@ -277,33 +327,11 @@ export default function Workspace({ cases }: { cases: Case[] }) {
               : `API analysis failed (HTTP ${response.status}).`,
           );
         }
-        const result = await validateEnhanced(
-          {
-            schema_version: "1.0.0",
-            static_report: baseline,
-            model_review: value?.model_review,
-          },
-          snapshot.filename,
-          snapshot.source,
-          "browser",
-        );
-        if (
-          result.model_review.model_id !== BEDROCK.model ||
-          result.model_review.region !== BEDROCK.region ||
-          result.model_review.protocol !== BEDROCK.protocol
-        )
-          throw new Error(
-            "Bedrock returned an unexpected model configuration.",
-          );
+        const result = await validateCouncil(value, snapshot.source);
         if (stamp !== version.current || !mounted.current) return;
-        setVerified(true);
-        setReport(result.static_report);
-        setReview(result.model_review);
-        setExpanded(
-          result.model_review.findings.length
-            ? "AI-1"
-            : (result.static_report.candidates[0]?.id ?? null),
-        );
+        setVerified(result.status === "completed");
+        setCouncil(result);
+        setExpanded(result.findings[0]?.id ?? null);
       } else {
         await validateResponse(
           baseline,
@@ -354,7 +382,9 @@ export default function Workspace({ cases }: { cases: Case[] }) {
   }
 
   return (
-    <div className={`app-shell ${focused ? "workspace-focused" : ""}`}>
+    <div
+      className={`app-shell ${mode === "api" ? "council-mode" : ""} ${focused ? "workspace-focused" : ""}`}
+    >
       <a className="skip-link" href="#workspace">
         Skip to workspace
       </a>
@@ -471,6 +501,14 @@ export default function Workspace({ cases }: { cases: Case[] }) {
               </button>
             </div>
           </div>
+          {mode === "api" && (
+            <CouncilStatus
+              report={validCouncil}
+              busy={busy}
+              hasKey={hasKey}
+              onConnect={() => apiDialog.current?.showModal()}
+            />
+          )}
           <div className="workspace-grid">
             <section className="source-panel" aria-labelledby="source-title">
               <header className="panel-header source-header">
@@ -555,7 +593,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
               ) : (
                 <CodeView
                   source={source}
-                  active={active?.evidence}
+                  active={focusTarget?.evidence ?? active?.evidence}
                   viewRef={sourceView}
                 />
               )}
@@ -602,7 +640,12 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                 <div>
                   <Icon name="shield" size={19} />
                   <h2 id="findings-title">
-                    Findings <span>{validReport ? findings.length : "—"}</span>
+                    Findings{" "}
+                    <span>
+                      {(showConsensus ? validCouncil : validReport)
+                        ? findings.length
+                        : "—"}
+                    </span>
                   </h2>
                 </div>
                 <div className="report-buttons">
@@ -611,10 +654,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                     aria-label="Download JSON report"
                     title="Download JSON"
                     disabled={!validReport}
-                    onClick={() =>
-                      validReport &&
-                      downloadReport(validReport, "json", validReview)
-                    }
+                    onClick={() => exportReport("json")}
                   >
                     <span>JSON</span>
                     <Icon name="download" size={14} />
@@ -624,16 +664,35 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                     aria-label="Download Markdown report"
                     title="Download Markdown"
                     disabled={!validReport}
-                    onClick={() =>
-                      validReport &&
-                      downloadReport(validReport, "md", validReview)
-                    }
+                    onClick={() => exportReport("md")}
                   >
                     <span>MD</span>
                     <Icon name="download" size={14} />
                   </button>
                 </div>
               </header>
+              {mode === "api" && (
+                <div
+                  className="result-view-switch"
+                  role="group"
+                  aria-label="Result source"
+                >
+                  <button
+                    aria-pressed={resultView === "consensus"}
+                    onClick={() => changeResultView("consensus")}
+                  >
+                    Model consensus{" "}
+                    <span>{validCouncil?.findings.length ?? "—"}</span>
+                  </button>
+                  <button
+                    aria-pressed={resultView === "static"}
+                    onClick={() => changeResultView("static")}
+                  >
+                    Static baseline{" "}
+                    <span>{validReport?.candidates.length ?? "—"}</span>
+                  </button>
+                </div>
+              )}
               <div className="findings-toolbar">
                 <div
                   className="severity-filters"
@@ -675,7 +734,25 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                   />
                 </label>
               </div>
+              {showConsensus && (
+                <div className="confidence-toolbar">
+                  <label htmlFor="confidence-filter">
+                    Consensus confidence
+                  </label>
+                  <select
+                    id="confidence-filter"
+                    value={confidence}
+                    onChange={(event) => setConfidence(event.target.value)}
+                  >
+                    <option value="ALL">All confidence levels</option>
+                    <option value="HIGH">High · 3-model agreement</option>
+                    <option value="MEDIUM">Medium · 2-model agreement</option>
+                    <option value="LOW">Low · single model</option>
+                  </select>
+                </div>
+              )}
               <div
+                ref={findingsView}
                 className="findings-content"
                 aria-live="polite"
                 aria-busy={busy}
@@ -691,27 +768,67 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                     <div>
                       <strong>
                         {mode === "api"
-                          ? "Reviewing with Bedrock"
+                          ? "Three independent reviews in progress"
                           : "Running static rules"}
                       </strong>
                       <span>
                         {mode === "api"
-                          ? "Source and static evidence sent for model review."
+                          ? "Awaiting model responses and source validation. This can take a few minutes."
                           : "Checking the current source snapshot."}
                       </span>
                     </div>
                   </div>
                 )}
-                {validReview && (
-                  <div className="model-summary">
-                    <span className="mini-label">
-                      <Icon name="layers" size={13} />
-                      BEDROCK REVIEW
+                {showConsensus && validCouncil && (
+                  <div className={`consensus-summary ${validCouncil.status}`}>
+                    <div className="summary-heading">
+                      <span className="mini-label">EVIDENCE CONSENSUS</span>
+                      <span>
+                        {completedModels} / {BEDROCK_MODELS.length} reviews
+                        completed
+                      </span>
+                    </div>
+                    <p>
+                      {validCouncil.status === "completed"
+                        ? "Independent reviews reconciled by category and source evidence."
+                        : validCouncil.status === "partial"
+                          ? "Partial coverage. Results from unavailable models are not treated as agreement."
+                          : "No model returned a valid review. Check the model details above and retry."}
+                    </p>
+                    <span className="consensus-caption">
+                      Confidence reflects model agreement, not a probability of
+                      exploitability.
                     </span>
-                    <p>{validReview.summary}</p>
                   </div>
                 )}
-                {!validReport && !busy ? (
+                {showConsensus && !validCouncil && !busy ? (
+                  <div className="empty-state">
+                    <span className="mini-label">
+                      THREE INDEPENDENT PERSPECTIVES
+                    </span>
+                    <h3>Ready for model review</h3>
+                    <p>
+                      Run API analysis to compare the three models.
+                      <br />
+                      Your static baseline remains available in its own view.
+                    </p>
+                  </div>
+                ) : showConsensus && validCouncil?.status === "failed" ? (
+                  <div className="empty-state">
+                    <h3>Model review unavailable</h3>
+                    <p>
+                      Check the errors for each model above.
+                      <br />
+                      You can still inspect the static baseline.
+                    </p>
+                    <button
+                      className="quiet-button"
+                      onClick={() => changeResultView("static")}
+                    >
+                      View static baseline <Icon name="arrow" size={14} />
+                    </button>
+                  </div>
+                ) : !validReport && !busy ? (
                   <div className="empty-state">
                     <div className="empty-symbol">
                       <Icon name="scan" size={28} />
@@ -719,14 +836,16 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                     <h3>Ready for analysis</h3>
                     <p>Run an analysis to inspect this contract.</p>
                   </div>
-                ) : validReport && findings.length === 0 ? (
+                ) : !busy && validReport && findings.length === 0 ? (
                   <div className="empty-state">
                     <div className="empty-symbol">
                       <Icon name="check" size={28} />
                     </div>
                     <h3>No candidates flagged</h3>
                     <p>
-                      No matching patterns were found.
+                      {showConsensus
+                        ? "The completed models did not flag a source-bound candidate."
+                        : "No matching patterns were found."}
                       <br />
                       Manual review is still required.
                     </p>
@@ -739,6 +858,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                       className="quiet-button"
                       onClick={() => {
                         setFilter("ALL");
+                        setConfidence("ALL");
                         setQuery("");
                       }}
                     >
@@ -768,7 +888,9 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                               {item.proposed_severity}
                             </span>
                             <span className="finding-origin">
-                              {item.kind === "model" ? "Bedrock" : "Static"}
+                              {item.consensus
+                                ? `${item.consensus.agreement} / ${BEDROCK_MODELS.length} models`
+                                : "Static"}
                             </span>
                             <span className="finding-line">
                               L{item.evidence.line_start}
@@ -786,6 +908,20 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                         id={`detail-${item.id}`}
                         hidden={expanded !== item.id}
                       >
+                        {item.consensus && (
+                          <div className="consensus-confidence">
+                            <span
+                              className={`confidence-pill ${item.consensus.confidence.toLowerCase()}`}
+                            >
+                              {item.consensus.confidence} CONFIDENCE
+                            </span>
+                            {item.consensus.severity_disagreement && (
+                              <span className="disagreement-note">
+                                Severity differs across models
+                              </span>
+                            )}
+                          </div>
+                        )}
                         <p>{item.rationale}</p>
                         <div className="evidence-heading">
                           <span>SOURCE EVIDENCE</span>
@@ -807,6 +943,20 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                         </pre>
                         <h4>Recommended action</h4>
                         <p>{item.recommendation}</p>
+                        {item.consensus && validCouncil && (
+                          <ConsensusEvidence
+                            finding={item.consensus}
+                            report={validCouncil}
+                            onEvidence={(evidence) =>
+                              focusCandidate(
+                                item.id,
+                                evidence.line_start,
+                                false,
+                                evidence,
+                              )
+                            }
+                          />
+                        )}
                         <div className="finding-tags">
                           <span>{item.rule_id}</span>
                           <span>{item.category}</span>
@@ -819,11 +969,19 @@ export default function Workspace({ cases }: { cases: Case[] }) {
               </div>
               <footer className="results-footer">
                 <span>
-                  <span className={`result-dot ${busy ? "pulsing" : ""}`} />
+                  <span
+                    className={`result-dot ${busy ? "pulsing" : showConsensus && validCouncil && validCouncil.status !== "completed" ? "incomplete" : ""}`}
+                  />
                   {busy
                     ? "Analysis in progress"
-                    : validReview
-                      ? "Static + Bedrock review"
+                    : showConsensus
+                      ? validCouncil
+                        ? validCouncil.status === "completed"
+                          ? "Three-model review complete"
+                          : validCouncil.status === "partial"
+                            ? "Partial model coverage"
+                            : "Model review failed"
+                        : "Awaiting model review"
                       : validReport
                         ? validReport.execution === "recorded"
                           ? "Reference result"
@@ -882,8 +1040,8 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           <div>
             <h3>Analysis scope</h3>
             <p>
-              {validReview
-                ? "Static rules and one Bedrock model reviewed this source. Findings remain unreviewed hypotheses."
+              {validCouncil
+                ? `${completedModels} of ${BEDROCK_MODELS.length} model reviews completed, with an independent static baseline. Findings remain candidates for human review.`
                 : "15 static pattern rules. No compilation or model analysis has run for this report."}
             </p>
             <p>
@@ -916,19 +1074,32 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                   <dt>SHA-256</dt>
                   <dd>{validReport.source_sha256}</dd>
                 </div>
-                {validReview && (
+                {validCouncil && (
                   <>
                     <div>
-                      <dt>Model</dt>
-                      <dd>{validReview.model_id}</dd>
+                      <dt>Orchestrator</dt>
+                      <dd>{validCouncil.engine}</dd>
                     </div>
                     <div>
-                      <dt>Tokens</dt>
+                      <dt>Coverage</dt>
                       <dd>
-                        {validReview.input_tokens ?? "—"} input /{" "}
-                        {validReview.output_tokens ?? "—"} output
+                        {completedModels} / {BEDROCK_MODELS.length} models ·{" "}
+                        {validCouncil.status}
                       </dd>
                     </div>
+                    {validCouncil.models.map((model) => (
+                      <div key={model.model_id}>
+                        <dt>{model.label}</dt>
+                        <dd>
+                          {model.model_id}
+                          <br />
+                          {model.status} ·{" "}
+                          {model.review
+                            ? `${model.review.input_tokens ?? "—"} input / ${model.review.output_tokens ?? "—"} output tokens`
+                            : "No validated review"}
+                        </dd>
+                      </div>
+                    ))}
                   </>
                 )}
               </dl>
@@ -973,19 +1144,22 @@ export default function Workspace({ cases }: { cases: Case[] }) {
               <div>
                 <h3>Add model reasoning</h3>
                 <p>
-                  API analysis sends the source and baseline to one configured
-                  AWS Bedrock model. Static and model findings remain distinct.
+                  GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7 review the same
+                  source independently through AWS Bedrock. Static findings
+                  remain a separate baseline.
                 </p>
               </div>
             </li>
             <li>
               <span>03</span>
               <div>
-                <h3>Validate and review</h3>
+                <h3>Validate and reconcile</h3>
                 <p>
-                  Check the response structure and match cited excerpts to the
-                  source. Review exploitability and remediation before making a
-                  decision.
+                  The orchestrator validates each response and its cited source,
+                  groups related findings, and preserves each model&apos;s
+                  reasoning. Confidence reflects how many models agree. Missing
+                  models and severity disagreements remain visible for human
+                  review.
                 </p>
               </div>
             </li>
@@ -1058,17 +1232,22 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           </button>
         </header>
         <div className="modal-body">
-          <div className="connection-model">
-            <div>
-              <span className="eyebrow">MODEL</span>
-              <strong>{BEDROCK.label}</strong>
+          <div className="connection-council">
+            <div className="connection-council-heading">
+              <span className="eyebrow">REVIEW COUNCIL</span>
+              <span className="connection-region">US · N. Virginia</span>
             </div>
-            <span className="connection-region">US · N. Virginia</span>
+            {BEDROCK_MODELS.map((model) => (
+              <div className="connection-model-row" key={model.id}>
+                <strong>{model.label}</strong>
+                <span>{model.provider}</span>
+              </div>
+            ))}
           </div>
           <p>
-            Add your Bedrock key to review contracts in this workspace. API
-            analysis sends your key and source through this site&apos;s server
-            to AWS.
+            One Bedrock key authorizes all three model requests. Your AWS
+            account must have access to each model. API analysis sends your key
+            and source through this site&apos;s server to AWS.
           </p>
           <form
             className="connection-form"
@@ -1107,9 +1286,11 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           <div className="connection-status" role="status">
             <span className={`result-dot ${hasKey ? "" : "inactive"}`} />
             {verified
-              ? "AWS access verified by the last analysis"
+              ? "All three model reviews succeeded with this key"
               : hasKey
-                ? "Key ready · AWS access not yet verified"
+                ? validCouncil
+                  ? `${completedModels} of ${BEDROCK_MODELS.length} models returned a valid review`
+                  : "Key ready · AWS access not yet verified"
                 : "No API key connected"}
             {hasKey && (
               <button className="quiet-button" onClick={clearKey}>
@@ -1118,8 +1299,9 @@ export default function Workspace({ cases }: { cases: Case[] }) {
             )}
           </div>
           <p className="connection-note">
-            Access is verified when you run analysis. Usage is billed to the AWS
-            account associated with your key.
+            A completed run makes three model calls. Access is checked during
+            analysis; usage is billed to the AWS account associated with your
+            key.
           </p>
           <div className="connection-footer">
             <a

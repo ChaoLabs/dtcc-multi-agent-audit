@@ -13,7 +13,9 @@
     "typecheck": "next typegen && tsc --noEmit",
     "format:check": "prettier --check src tests *.ts *.mjs *.json",
     "test:e2e": "playwright test",
-    "generate:types": "json2ts -i src/generated/report.schema.json -o src/generated/report.d.ts --bannerComment '' && json2ts -i src/generated/review.schema.json -o src/generated/review.d.ts --bannerComment '' && prettier --write src/generated"
+    "generate:types": "json2ts -i src/generated/report.schema.json -o src/generated/report.d.ts --bannerComment '' && json2ts -i src/generated/review.schema.json -o src/generated/review.d.ts --bannerComment '' && prettier --write src/generated",
+    "test:unit": "playwright test --config playwright.unit.config.ts",
+    "verify": "npm run lint && npm run typecheck && npm run format:check && npm run test:unit && npm run build"
   },
   "dependencies": {
     "@fontsource-variable/manrope": "5.3.0",

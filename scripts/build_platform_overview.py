@@ -1,9 +1,9 @@
-"""Build the standalone platform brief (optional authoring dependency: reportlab 4.4.9).
+"""Build the six-page platform brief (authoring dependency: reportlab 4.4.9).
 
 Run from any directory: python scripts/build_platform_overview.py
 The generated PDF is committed so normal web builds need no PDF dependencies.
-Content is based on the supplied summer presentation and the implemented platform.
-The consulting case informs layout only; no case content or proprietary figures are reused.
+Capability claims follow the implemented browser and Bedrock review workflow.
+The supplied presentation informs context and the consulting case informs layout only.
 """
 
 from pathlib import Path
@@ -20,11 +20,13 @@ OUT = ROOT / "apps/web/public/docs/DTCC_Platform_Overview.pdf"
 W, H = 900, 600
 M = 44
 WIDTH = W - 2 * M
+PAGES = 6
 GREEN = colors.HexColor("#063E31")
 INK = colors.HexColor("#19382D")
 MUTED = colors.HexColor("#5A6D63")
 LINE = colors.HexColor("#CCDAD0")
 PALE = colors.HexColor("#F0F5EF")
+MINT = colors.HexColor("#D2E8D9")
 WHITE = colors.white
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
@@ -44,7 +46,7 @@ pdfmetrics.registerFontFamily(
 c = canvas.Canvas(str(OUT), pagesize=(W, H), pageCompression=1, invariant=1)
 c.setTitle("Multi-Agent AI for Smart Contract Audit and Cybersecurity Risk Assessment")
 c.setAuthor("Chao Li | Duke FinTech")
-c.setSubject("Project background, platform capabilities and evidence-based review")
+c.setSubject("Platform capabilities, independent model review and evidence orchestration")
 c.setCreator("DTCC audit workspace | platform documentation")
 
 
@@ -102,32 +104,64 @@ def header(number, section, title=None, subtitle=None):
     if subtitle:
         text(subtitle, M, 132, WIDTH, 11, MUTED)
     rule(557)
-    label(section.upper(), M, 567, 560)
-    text(f"{number:02d} / 04", W - M - 45, 565, 45, 9, MUTED)
+    label(section.upper(), M, 567, 650)
+    text(f"{number:02d} / {PAGES:02d}", W - M - 45, 565, 45, 9, MUTED)
 
 
 def table(y, headers, rows, widths, row_heights):
+    assert sum(widths) == WIDTH
+    assert len(headers) == len(widths)
+    assert len(rows) == len(row_heights)
     x = M
     box(M, y, WIDTH, 29, GREEN)
-    for h, w in zip(headers, widths):
-        text(h, x + 10, y + 8, w - 20, 9, WHITE, True, 12)
-        x += w
+    for heading, width in zip(headers, widths, strict=True):
+        text(heading, x + 10, y + 8, width - 20, 9, WHITE, True, 12)
+        x += width
     y += 29
-    for row_index, (row, height) in enumerate(zip(rows, row_heights)):
+    for row_index, (row, height) in enumerate(zip(rows, row_heights, strict=True)):
         if row_index % 2 == 0:
             box(M, y, WIDTH, height, PALE)
         x = M
-        for i, (v, w) in enumerate(zip(row, widths)):
-            size = 10 if i else 10.5
-            used = text(v, x + 10, y + 8, w - 20, size, INK if i == 0 else MUTED, i == 0, 14)
-            assert used + 16 <= height, (v, used, height)
-            x += w
+        for i, (value, width) in enumerate(zip(row, widths, strict=True)):
+            used = text(
+                value,
+                x + 10,
+                y + 8,
+                width - 20,
+                10 if i else 10.5,
+                INK if i == 0 else MUTED,
+                i == 0,
+                14,
+            )
+            assert used + 16 <= height, (value, used, height)
+            x += width
         y += height
         rule(y)
     return y
 
 
-# Page 1: a clear investment in source-level risk review, without unsupported metrics.
+def connector(points, arrow=False):
+    c.setStrokeColor(colors.HexColor("#8EAA99"))
+    c.setLineWidth(0.9)
+    path = c.beginPath()
+    path.moveTo(points[0][0], H - points[0][1])
+    for x, y in points[1:]:
+        path.lineTo(x, H - y)
+    c.drawPath(path)
+    if arrow:
+        x, y = points[-1]
+        c.line(x - 3, H - y + 4, x, H - y)
+        c.line(x + 3, H - y + 4, x, H - y)
+
+
+def link_card(x, y, width, title, display, url):
+    box(x, y, width, 84, PALE)
+    label(title, x + 14, y + 14, width - 28, GREEN)
+    text(display, x + 14, y + 34, width - 28, 9.5, MUTED, leading=14)
+    c.linkURL(url, (x, H - y - 84, x + width, H - y), relative=0, thickness=0)
+
+
+# 1. Context and the platform's decision-support purpose.
 header(1, "Context & purpose")
 text(
     "Multi-Agent AI for Smart Contract Audit<br/>and Cybersecurity Risk Assessment",
@@ -140,7 +174,7 @@ text(
     32,
 )
 text(
-    "A source-review platform for identifying potential vulnerabilities, inspecting evidence and documenting security decisions.",
+    "Investigate smart contract risks through reproducible checks, independent model reviews and source-linked evidence.",
     M,
     167,
     WIDTH,
@@ -150,28 +184,29 @@ text(
 )
 rule(215, color=GREEN, thickness=1)
 col = (WIDTH - 48) / 3
-sections = [
-    (
-        "THE CONTEXT",
-        "Code governs the asset",
-        "Smart contracts encode permissions, transfers and interactions in digital asset workflows. A defect in those controls can affect custody, transaction integrity or availability.",
-    ),
-    (
-        "THE REVIEW PROBLEM",
-        "A finding needs evidence",
-        "A code pattern can be benign in context; a plausible AI explanation can still be wrong. Reviewers need the exact source, a clear rationale and a way to trace each claim.",
-    ),
-    (
-        "THE PLATFORM RESPONSE",
-        "Make findings inspectable",
-        "Combine a reproducible static baseline with optional Bedrock reasoning. Preserve the source record and keep model findings identifiable for human review.",
-    ),
-]
-for i, (k, t, b) in enumerate(sections):
+for i, (kicker, title, body) in enumerate(
+    [
+        (
+            "THE CONTEXT",
+            "Code governs the asset",
+            "Smart contracts encode permissions, transfers and interactions in digital asset workflows. A defect in those controls can affect custody, transaction integrity or availability.",
+        ),
+        (
+            "THE REVIEW PROBLEM",
+            "A finding needs evidence",
+            "A recognizable pattern may be benign in context. Model explanations may disagree. Reviewers need the relevant source, the reasoning behind each claim and a record of differences.",
+        ),
+        (
+            "THE PLATFORM RESPONSE",
+            "Make findings inspectable",
+            "Combine an independent static baseline with three model reviews. Validate cited source evidence, reconcile compatible findings and preserve the original contributions for review.",
+        ),
+    ]
+):
     x = M + i * (col + 24)
-    label(k, x, 236, col, GREEN)
-    text(t, x, 258, col, 17, GREEN, True, 21)
-    text(b, x, 294, col, 11, MUTED, leading=16)
+    label(kicker, x, 236, col, GREEN)
+    text(title, x, 258, col, 17, GREEN, True, 21)
+    text(body, x, 294, col, 11, MUTED, leading=16)
 label("CONNECT TECHNICAL FINDINGS TO DIGITAL ASSET EXPOSURE", M, 402, WIDTH, GREEN)
 table(
     426,
@@ -198,62 +233,62 @@ table(
 )
 c.showPage()
 
-# Page 2: browser and visitor-key API capabilities.
+# 2. Complementary analysis modes and shared browser capabilities.
 header(
     2,
-    "Platform capabilities",
+    "Workspace & analysis modes",
     "One workspace. Two analysis modes.",
-    "Inspect a single Solidity file, investigate candidate findings and export a source-linked report.",
+    "Prepare a single Solidity file, investigate candidate findings and export a source-linked report.",
 )
 col = (WIDTH - 28) / 2
-for i, (k, title, body, detail) in enumerate(
+for i, (kicker, title, body, detail) in enumerate(
     [
         (
             "STATIC ANALYSIS",
             "Run checks on-device",
-            "15 pattern rules examine the submitted source directly in the browser. No API key or backend is required.",
-            "The public website and local workspace both support this mode. The source remains in the browser.",
+            "15 pattern rules inspect the submitted source in the browser. No API key or backend is required.",
+            "The source stays on-device in this mode. Results provide a reproducible baseline with matched lines and recommended review actions.",
         ),
         (
             "API ANALYSIS",
-            "Add Bedrock reasoning",
-            "Enter your Bedrock key in the website. Its server sends the source and static baseline to GPT-6 Astra.",
-            "The user starts the request explicitly. Static and model findings remain distinct, and model evidence is checked before acceptance.",
+            "Compare independent reviews",
+            "Three parallel model reviews, using one Bedrock key:<br/>GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7.",
+            "Each model independently reviews the same source. The application validates evidence and reconciles compatible findings.",
         ),
     ]
 ):
     x = M + i * (col + 28)
     box(x, 174, col, 171, PALE)
-    label(k, x + 18, 191, col - 36, GREEN)
+    label(kicker, x + 18, 191, col - 36, GREEN)
     text(title, x + 18, 211, col - 36, 18, GREEN, True)
     text(body, x + 18, 246, col - 36, 11, MUTED, leading=16)
     text(detail, x + 18, 302, col - 36, 9.5, MUTED, leading=13)
-label("WORKSPACE FUNCTIONS", M, 366, WIDTH, GREEN)
+label("FROM SOURCE TO REVIEWABLE RESULTS", M, 366, WIDTH, GREEN)
 table(
     387,
-    ["Task", "Interaction", "What the reviewer receives"],
+    ["Task", "Workspace interaction", "Review output"],
     [
         [
-            "Prepare the source",
-            "Upload .sol, edit code or open a reference case",
-            "A numbered source snapshot for inspection",
+            "Prepare",
+            "Upload .sol, edit source or choose a reference case",
+            "A numbered source snapshot; focus view for inspection",
         ],
         [
-            "Investigate findings",
-            "Filter by severity, search and expand a finding",
-            "Rationale, source evidence and recommended action",
+            "Investigate",
+            "Search; filter severity or model agreement; expand findings",
+            "Rationale, source excerpt, model contributions and action",
         ],
         [
-            "Inspect & share",
-            "Jump to source lines; export JSON or Markdown",
-            "Source hash, analysis metadata and accepted findings",
+            "Document",
+            "Jump to cited lines; open report details; download results",
+            "Source provenance and JSON or Markdown exports",
         ],
     ],
-    [155, 317, 340],
+    [118, 344, 350],
     [40, 40, 40],
 )
 text(
-    "API review uses your key through the website server. Keys stay in tab/request memory; AWS usage is charged to your account.",
+    "The hosted website supports the complete browser workflow. The same workspace can also run locally from the repository.",
     M,
     541,
     WIDTH,
@@ -263,137 +298,344 @@ text(
 )
 c.showPage()
 
-# Page 3: representative coverage; patterns do not establish exploitability.
+# 3. The actual source fan-out and deterministic application orchestrator.
 header(
     3,
-    "Risk coverage",
-    "Prioritize risk. Preserve the context.",
-    "The static baseline flags recognizable patterns. Each candidate still needs contextual review.",
+    "Multi-model orchestration",
+    "Independent reviews. Explicit orchestration.",
+    "Three Bedrock model calls run in parallel and feed one deterministic reconciliation process.",
 )
-table(
-    174,
-    ["Risk family", "Signals examined", "Questions for the reviewer"],
-    [
-        [
-            "Access control & custody",
-            "tx.origin authorization, ownership changes and asset-transfer patterns",
-            "Who is permitted to act? Are recipients and state changes consistent with intended business rules?",
-        ],
-        [
-            "External interactions",
-            "Calls before balance updates, unchecked call/send results and caller-controlled callbacks",
-            "Can control re-enter the contract? What state is visible? How are failures handled?",
-        ],
-        [
-            "Execution authority",
-            "delegatecall and selfdestruct expressions",
-            "Who controls the target? What authorization, storage and chain-specific assumptions apply?",
-        ],
-        [
-            "Economic & time assumptions",
-            "Block-data randomness, predictable game outcomes and timestamp-sensitive logic",
-            "Can a participant influence inputs, timing or payouts? What information is already public?",
-        ],
-        [
-            "Configuration & availability",
-            "Legacy or missing compiler declarations and potentially unbounded iteration",
-            "Which compiler is intended? Can execution grow beyond a usable gas budget?",
-        ],
-    ],
-    [175, 282, 355],
-    [60, 60, 60, 60, 60],
-)
+source_x, source_w = 239, 422
+box(source_x, 174, source_w, 47, PALE)
+label("SHARED INPUT", source_x + 16, 183, source_w - 32, GREEN)
 text(
-    "Severity is a proposed prioritization aid. A matched expression is not proof of an exploitable vulnerability.",
-    M,
-    521,
-    WIDTH,
-    10,
+    "Numbered source + common review instructions + output schema",
+    source_x + 16,
+    199,
+    source_w - 32,
+    9.5,
     MUTED,
+    leading=13,
+)
+model_w = (WIDTH - 32) / 3
+centers = [M + i * (model_w + 16) + model_w / 2 for i in range(3)]
+connector([(W / 2, 221), (W / 2, 235)])
+connector([(centers[0], 235), (centers[2], 235)])
+for i, (name, provider) in enumerate(
+    [("GPT-6.1 Sol", "OPENAI"), ("Claude Opus 5.5", "ANTHROPIC"), ("Grok 4.7", "XAI")]
+):
+    x = M + i * (model_w + 16)
+    connector([(centers[i], 235), (centers[i], 247)], arrow=True)
+    box(x, 248, model_w, 62, PALE)
+    label(provider, x + 15, 260, model_w - 30, GREEN)
+    text(name, x + 15, 279, model_w - 30, 17, GREEN, True, 22)
+    connector([(centers[i], 310), (centers[i], 327)])
+connector([(centers[0], 327), (centers[2], 327)])
+connector([(W / 2, 327), (W / 2, 342)], arrow=True)
+box(M, 344, WIDTH, 67, GREEN)
+label("DETERMINISTIC ORCHESTRATOR  /  TYPESCRIPT APPLICATION LOGIC", M + 18, 357, WIDTH - 36, MINT)
+text(
+    "Validate evidence. Reconcile compatible findings. Record distinct model support.",
+    M + 18,
+    378,
+    WIDTH - 36,
+    14,
+    WHITE,
+    True,
+    19,
+)
+for i, (title, body) in enumerate(
+    [
+        (
+            "01  Validate",
+            "Check the report structure, stated line ranges and exact source excerpts before accepting a review.",
+        ),
+        (
+            "02  Reconcile",
+            "Match compatible weaknesses at identifiable source locations. Keep ambiguous claims separate.",
+        ),
+        (
+            "03  Preserve",
+            "Retain individual model outcomes and original findings so reviewers can inspect each contribution.",
+        ),
+    ]
+):
+    x = M + i * (model_w + 16)
+    text(title, x, 432, model_w, 12, GREEN, True, 17)
+    text(body, x, 458, model_w, 10.5, MUTED, leading=15)
+text(
+    "Static findings and peer answers are excluded from model prompts. Orchestration uses application logic, with no fourth model.",
+    M,
+    536,
+    WIDTH,
+    8.5,
+    MUTED,
+    leading=11,
 )
 c.showPage()
 
-# Page 4: the source-to-finding contract and review boundaries.
+# 4. Source binding, fixed-denominator support and severity interpretation.
 header(
     4,
-    "Evidence & reporting",
-    "Every conclusion should be traceable.",
-    "Read the claim, inspect the cited lines and assess the proposed action against the contract's intended behavior.",
+    "Evidence & agreement",
+    "Evidence validation and model agreement",
+    "Inspect what was checked, how many models support a claim and how its proposed severity was selected.",
 )
-left = 382
-right = 402
-rx = M + left + 28
-label("ILLUSTRATIVE FINDING  /  STATIC", M, 176, left, GREEN)
-text("External call before balance update", M, 198, left, 18, GREEN, True, 23)
-text(
-    "A call before the balance update can leave state exposed during an external interaction. The reviewer must determine whether re-entry is possible and economically meaningful.",
-    M,
-    255,
-    left,
-    11,
-    MUTED,
-    leading=16,
-)
-box(M, 326, left, 78, GREEN)
-c.setFillColor(colors.HexColor("#D2E8D9"))
-c.setFont("PlexMono", 9)
-for j, line in enumerate(
+col = (WIDTH - 30) / 2
+rx = M + col + 30
+label("SOURCE EVIDENCE ACCEPTANCE", M, 176, col, GREEN)
+for i, (title, body) in enumerate(
     [
-        '(bool ok, ) = msg.sender.call{value: amt}("");',
-        'require(ok, "transfer failed");',
-        "balances[msg.sender] -= amt;",
+        (
+            "Validate the response structure",
+            "Required fields, allowed severity labels and content limits must satisfy the review schema.",
+        ),
+        (
+            "Bind the evidence to the source",
+            "The stated line range must be valid. The excerpt must reproduce those original source lines exactly, with at most 12 lines per finding.",
+        ),
+        (
+            "Record the server's validation",
+            "The server records source validation only after these checks pass. A model cannot certify its own evidence as verified.",
+        ),
     ]
 ):
-    c.drawString(M + 14, H - 345 - j * 18, line)
-text("Review action", M, 421, left, 11, GREEN, True)
+    y = 200 + i * 79
+    text(f"0{i + 1}", M, y, 30, 11, GREEN, True)
+    text(title, M + 37, y, col - 37, 11.5, GREEN, True, 16)
+    text(body, M + 37, y + 24, col - 37, 10.5, MUTED, leading=15)
+label("AGREEMENT-BASED CONFIDENCE", rx, 176, col, GREEN)
+mini_w = (col - 20) / 3
+for i, (support, confidence) in enumerate(
+    [("1 / 3", "LOW"), ("2 / 3", "MEDIUM"), ("3 / 3", "HIGH")]
+):
+    x = rx + i * (mini_w + 10)
+    box(x, 200, mini_w, 72, PALE)
+    text(support, x + 12, 210, mini_w - 24, 22, GREEN, True, 26)
+    label(confidence, x + 12, 247, mini_w - 24, GREEN)
 text(
-    "Check the call path and guards. Consider updating state before the call or using an appropriate reentrancy guard; validate the change with targeted tests.",
-    M,
-    442,
-    left,
-    10.5,
-    MUTED,
-    leading=15,
-)
-label("REPORT CONTENTS", rx, 176, right, GREEN)
-entries = [
-    ("Finding", "Proposed severity, origin, category, rationale and recommended action."),
-    ("Evidence", "Source line range and excerpt linked to the submitted source."),
-    ("Provenance", "Filename, source SHA-256, run metadata and model identity when used."),
-]
-y = 198
-for title, body in entries:
-    text(title, rx, y, 91, 11, GREEN, True)
-    text(body, rx + 100, y, right - 100, 10.5, MUTED, leading=15)
-    rule(y + 42, rx, right)
-    y += 58
-label("VALIDATION & REVIEW BOUNDARIES", rx, 390, right, GREEN)
-text(
-    "Model output must satisfy the report schema and quote source excerpts that match the submitted file. Invalid model output is rejected; the static baseline remains available.",
+    "Each distinct supporting model counts once. Duplicate findings add no votes. Static matches and missing model results add no votes; the denominator remains three.",
     rx,
-    411,
-    right,
+    288,
+    col,
     10.5,
     MUTED,
     leading=15,
 )
+label("SEVERITY & DIFFERENCES", rx, 353, col, GREEN)
 text(
-    "This workflow does not compile contracts, resolve imports, execute exploits, modify code or deploy on-chain. Human review is needed to determine exploitability and remediation.",
+    "The highest proposed severity in a group is displayed, and severity differences remain visible. Its rationale, action and excerpt come from that representative finding; original contributions remain available.",
     rx,
-    466,
-    right,
+    375,
+    col,
     10.5,
     MUTED,
     leading=15,
 )
+box(M, 473, WIDTH, 57, PALE)
 text(
-    "Based on the supplied Duke FinTech / DTCC presentation and the platform's implemented behavior. No performance or loss-reduction claims are implied.",
+    "A HIGH-severity finding may have LOW agreement (1 / 3 models).",
+    M + 16,
+    484,
+    WIDTH - 32,
+    12,
+    GREEN,
+    True,
+    16,
+)
+text(
+    "Severity expresses proposed impact; agreement expresses breadth of model support. Both remain available for review.",
+    M + 16,
+    507,
+    WIDTH - 32,
+    10,
+    MUTED,
+    leading=14,
+)
+text(
+    "Source matching does not prove exploitability. Agreement is not a calibrated probability of correctness.",
     M,
-    538,
+    541,
     WIDTH,
-    8,
+    8.5,
     MUTED,
     leading=10,
 )
+c.showPage()
+
+# 5. Representative static coverage and the exported evidence record.
+header(
+    5,
+    "Risk coverage & reporting",
+    "Connect risk findings to an audit trail.",
+    "Review recognizable source patterns, then retain the evidence and model context behind each result.",
+)
+col = (WIDTH - 30) / 2
+rx = M + col + 30
+label("REPRESENTATIVE STATIC RISK FAMILIES", M, 176, col, GREEN)
+for i, (title, body) in enumerate(
+    [
+        (
+            "Access control & custody",
+            "tx.origin authorization, ownership changes and asset-transfer patterns.",
+        ),
+        (
+            "External interactions",
+            "Calls before balance updates, unchecked call/send results and caller-controlled callbacks.",
+        ),
+        (
+            "Execution authority",
+            "delegatecall and selfdestruct expressions, with their target and authorization assumptions.",
+        ),
+        (
+            "Economic & time assumptions",
+            "Block-data randomness, predictable game outcomes and timestamp-sensitive logic.",
+        ),
+        (
+            "Configuration & availability",
+            "Legacy or missing compiler declarations and potentially unbounded iteration.",
+        ),
+    ]
+):
+    y = 199 + i * 64
+    text(title, M, y, col, 11.5, GREEN, True, 16)
+    text(body, M, y + 23, col, 10.5, MUTED, leading=15)
+    if i < 4:
+        rule(y + 56, M, col)
+label("PROVENANCE & REVIEW RECORD", rx, 176, col, GREEN)
+for i, (title, body) in enumerate(
+    [
+        ("Source", "Filename and SHA-256 identify the analyzed source snapshot."),
+        ("Run", "Run ID, timestamp, engine version, elapsed time and overall review status."),
+        (
+            "Models",
+            "Model identities, success or failure, timings and token usage where available.",
+        ),
+    ]
+):
+    y = 199 + i * 61
+    text(title, rx, y, 76, 11, GREEN, True, 16)
+    text(body, rx + 88, y, col - 88, 10.5, MUTED, leading=15)
+    rule(y + 47, rx, col)
+label("EXPORT FOR FOLLOW-UP", rx, 391, col, GREEN)
+text("JSON", rx, 414, 76, 11, GREEN, True)
+text(
+    "Structured static report, consolidated findings and complete validated per-model reviews.",
+    rx + 88,
+    414,
+    col - 88,
+    10.5,
+    MUTED,
+    leading=15,
+)
+text("Markdown", rx, 474, 76, 11, GREEN, True)
+text(
+    "Readable findings, model outcomes, contribution details and an independent static baseline.",
+    rx + 88,
+    474,
+    col - 88,
+    10.5,
+    MUTED,
+    leading=15,
+)
+text(
+    "Review scope: one Solidity source file. Contracts are not compiled, imports are not resolved and exploits are not executed.",
+    M,
+    541,
+    WIDTH,
+    8.5,
+    MUTED,
+    leading=10,
+)
+c.showPage()
+
+# 6. Practical browser connection, outcome interpretation and useful destinations.
+header(
+    6,
+    "Connection & use",
+    "Connect, review and share from your browser.",
+    "Use a valid Amazon Bedrock key with access to the three configured models in US East (N. Virginia).",
+)
+col = (WIDTH - 30) / 2
+rx = M + col + 30
+label("BROWSER WORKFLOW", M, 176, col, GREEN)
+for i, (title, body) in enumerate(
+    [
+        (
+            "Prepare your source",
+            "Open a reference case, upload one .sol file or edit the source directly.",
+        ),
+        (
+            "Add your Bedrock key",
+            "Select API analysis, paste the complete key and choose Use API key. Adding it checks format; analysis verifies model access.",
+        ),
+        (
+            "Run and inspect",
+            "Choose Run API analysis, then inspect all three model outcomes, consolidated findings and original contributions.",
+        ),
+        (
+            "Export and clear",
+            "Download JSON or Markdown. Select Clear key or refresh the page to remove the active key from the tab.",
+        ),
+    ]
+):
+    y = 199 + i * 57
+    label(f"0{i + 1}", M, y + 2, 27, GREEN)
+    text(title, M + 35, y, col - 35, 11.5, GREEN, True, 16)
+    text(body, M + 35, y + 20, col - 35, 10, MUTED, leading=14)
+label("INTERPRET MODEL COVERAGE", rx, 176, col, GREEN)
+for i, (status, detail) in enumerate(
+    [
+        ("Completed", "3 / 3 models returned validated reviews."),
+        ("Partial", "1 or 2 succeeded. Their reviews remain available; failures stay explicit."),
+        (
+            "Failed",
+            "No validated model review is available. The independent static baseline remains usable.",
+        ),
+    ]
+):
+    y = 199 + i * 49
+    text(status, rx, y, 78, 11, GREEN, True, 16)
+    text(detail, rx + 90, y, col - 90, 10, MUTED, leading=14)
+    rule(y + 39, rx, col)
+text(
+    "Your key stays in this tab's memory and in server-request memory. API analysis sends the source and key through the site's server to AWS; your account's permissions and usage charges apply.",
+    rx,
+    354,
+    col,
+    10,
+    MUTED,
+    leading=14,
+)
+text(
+    "A successful empty review, partial coverage or a completed run does not establish that a contract is safe.",
+    rx,
+    417,
+    col,
+    8.5,
+    MUTED,
+    leading=11,
+)
+card_w = (WIDTH - 32) / 3
+for i, (title, display, url) in enumerate(
+    [
+        (
+            "OPEN THE PLATFORM",
+            "dtcc-multi-agent-audit.vercel.app",
+            "https://dtcc-multi-agent-audit.vercel.app/",
+        ),
+        (
+            "SOURCE & LOCAL SETUP",
+            "github.com/ChaoLabs/<br/>dtcc-multi-agent-audit",
+            "https://github.com/ChaoLabs/dtcc-multi-agent-audit",
+        ),
+        (
+            "CONNECTION & ANALYSIS GUIDE",
+            "dtcc-multi-agent-audit.vercel.app/<br/>guide",
+            "https://dtcc-multi-agent-audit.vercel.app/guide",
+        ),
+    ]
+):
+    link_card(M + i * (card_w + 16), 457, card_w, title, display, url)
 c.save()
 print(OUT)
