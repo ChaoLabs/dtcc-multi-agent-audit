@@ -1,27 +1,46 @@
-# M0 release checklist
+# Deployment and release acceptance
 
-## Local acceptance first
+Live platform: https://dtcc-multi-agent-audit.vercel.app/
 
-- Apply the initialization patch only to the empty project clone after `git apply --check` succeeds.
-- Run setup, offline checks, production build and the local workbench.
-- Verify case selection, candidate source lines, local edits, failed API behavior and JSON/Markdown exports.
-- Preserve unrelated changes; never use `git reset --hard` or force-apply a failing patch to recover.
-- Do not push until local acceptance, source/fixture publication permission and the attribution statement are confirmed.
+## Apply and verify locally
 
-## GitHub — user-operated
+Apply the supplied patch to the intended checkout only after its preflight succeeds. Preserve unrelated changes; do not force a failing patch or use `git reset --hard` to recover. The patch does not create commits, push to GitHub or change AWS permissions.
 
-Review the exact files and confirm no keys, `.env`, personal notes, databases or unintended archives are staged. Then make the first checkpoint commit and push to the empty `ChaoLabs/dtcc-multi-agent-audit` repository. The patch does not push, create commits or change the remote.
+Run the supplied offline checks and production build. Check case selection, upload/edit behavior, static analysis, source evidence, model status, consensus membership and JSON/Markdown exports. Offline model tests use mocks and do not incur AWS charges.
 
-The GitHub workflow is configuration until it actually runs. A local green test is not a claim that hosted CI is green. Enable branch checks only after the initial workflow succeeds. Configure secret scanning where available in the repository's settings.
+For live acceptance, use a fresh authorized visitor key and a short reference contract. Confirm the interface records **all three models as successful** before calling the three-model connection verified. A saved key or a successful response from only one model is insufficient. Examine partial/all-failed behavior and Clear key. No accuracy claim follows from a successful connection test.
 
-## Vercel — user-operated
+## GitHub
 
-Import the GitHub repository. Set Root Directory to `apps/web`, select Next.js and Node 24.x. Use `npm ci` and `npm run build`; retain the framework's output directory. No AWS variables, backend URL or Python setup are required. Enable Fluid compute so the Next.js API route can use its 120-second function duration. Keep the optional FastAPI service local; the website does not depend on it.
+Review `git status` and the exact diff before committing. Exclude credentials, `.env` files, personal notes, databases and unintended archives. Push through the team's normal branch/PR process. A local test pass is separate from the hosted CI result; check the actual workflow for the pushed commit.
 
-Verify the resulting public URL in a private/incognito window with the local API stopped. Check all five cases, upload/edit source, run static analysis with the local API stopped, download both report formats, open the web key form, inspect mobile layout and follow the GitHub link. Enter a valid visitor-owned key and run one small contract review to verify actual AWS access. Check failure behavior and Clear key. Inspect the browser network panel: analysis uses same-origin `/api/reviews`, with no browser call to port 8000 or directly to AWS. Do not share screenshots containing the request body or key.
+## Vercel
 
-Only after these checks should the README receive the real deployment URL and the milestone be marked deployed. Future pushes to the configured production branch update the Vercel site; review preview deployments before merging substantial changes.
+| Setting | Value |
+| --- | --- |
+| Repository | `ChaoLabs/dtcc-multi-agent-audit` |
+| Framework | Next.js |
+| Root Directory | `apps/web` |
+| Node.js | 24.x |
+| Install command | `npm ci` |
+| Build command | `npm run build` |
+| Output Directory | Framework default, no static export override |
+| Fluid compute | Enabled |
+| Route duration | 240 seconds (`maxDuration` in `/api/reviews`) |
+| AWS credentials / backend URL | None required in deployment environment variables |
 
-## Credential rules
+The three requests run concurrently with individual 180-second timeouts and a 210-second overall server deadline. The function duration leaves room for request parsing and response handling. Keep this as a Next.js deployment; publishing only `public` assets removes the application and API route. The optional Python API is not needed on Vercel.
 
-Do not configure a shared AWS key in Vercel environment variables. Visitors provide their own key in the web form, and the route never uses a deployment-owned fallback. An expired or unauthorized key affects only that visitor's API analysis. Static analysis remains available. Model usage is charged to the visitor's AWS account; function compute is charged to the Vercel owner. Before sharing broadly, set hosting firewall/rate controls and usage alerts appropriate to your plan. Do not enable request-body logging or session replay on the key form.
+After deployment, open the production URL in an incognito window while local servers are stopped. Verify the workspace, `/guide`, documentation PDF, reference cases, static analysis and downloads. Then perform the authorized small-contract API check described above. Network requests should use same-origin `/api/reviews`, with no calls to a visitor's port 8000. Do not share screenshots containing request bodies or keys.
+
+Future pushes to the configured production branch update the site. Use preview deployments to review substantial changes before merging. Check the deployed commit, build log and effective function settings if a deployment behaves differently from local production.
+
+## Credential and usage controls
+
+Each visitor provides a Bedrock key in the website. No shared AWS secret or `NEXT_PUBLIC_` credential is needed. Expired or unauthorized credentials affect that visitor's API analysis; static analysis remains available.
+
+Model usage is charged to the visitor's AWS account; function compute is charged to the Vercel owner. The application applies per-instance limits, not a distributed quota. Configure hosting usage controls appropriate to the deployment and avoid request-body logging or session replay on credential inputs. Cancelling the browser request does not ensure that AWS will cancel or waive charges for work already started.
+
+## Verification record
+
+Record the commit, check commands and results for each release. Keep mocked/offline verification separate from live AWS acceptance. The multi-model patch contains no DTCC credentials and does not by itself verify DTCC account permissions or real model outputs. See [Bedrock setup](BEDROCK.md) for account prerequisites.

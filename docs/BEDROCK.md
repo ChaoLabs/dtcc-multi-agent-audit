@@ -1,20 +1,86 @@
 # Bedrock API analysis
 
-The API mode restores the summer project's **static evidence + single-model review** capability. Three-model analysis and orchestration remain semester work. A successful request is a model review, not a comprehensive audit or proof of safety.
+The website runs **GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7** independently and in parallel through Amazon Bedrock. A deterministic application orchestrator consolidates accepted findings and preserves each model's original review. There is no fourth paid model call. [Orchestration details](ORCHESTRATION.md) explain matching, votes and incomplete results.
 
-## Website connection (Vercel and local Next.js)
+## Generate a fresh key through DevX
 
-1. Select **API analysis** and paste only the complete `bedrock-api-key-...` value.
-2. Choose **Use API key**. This validates the format without contacting AWS.
-3. Choose **Run API analysis**. A successful result establishes actual AWS access.
+1. Sign in through the DTCC-provided DevX account and open the project's AWS console.
+2. Select **US East (N. Virginia), us-east-1** before generating the key.
+3. Open **Amazon Bedrock → API keys → Short-term API keys → Generate short-term API keys**.
+4. Copy only the complete value beginning `bedrock-api-key-`, without the shell `export` command or quotation marks.
+5. Open [the platform](https://dtcc-multi-agent-audit.vercel.app/), select **API analysis**, paste the key, and select **Use API key**.
+6. Choose **Run API analysis** on a short contract. Verify the outcome for each of the three models.
 
-The web configuration is GPT-6 Astra, `us.openai.gpt-6-astra`, `us-east-1`, Converse. It uses US cross-Region inference. No Python process, OpenAI key, Vercel environment key or account setup inside this app is required. Visitors still need access to the model in their AWS account.
+A short-term key expires at the earlier of 12 hours or the generating AWS session's expiry. Generate it in `us-east-1`; keys are Region-bound. One key is sufficient for all three models if the generating IAM identity has their required permissions. Replacing a key does not grant new permissions or revoke an earlier short-term key. The platform cannot create a new AWS credential without an authenticated AWS session.
 
-The browser calls the site's own `/api/reviews` route. That Node.js function receives the key and source over HTTPS on Vercel, recomputes static candidates, sends one bounded request to AWS, validates the result and returns only the model review. The original browser static report is preserved. Credentials never enter the model prompt, report, cookie, browser storage, shared process environment or application logs. The application holds the key in tab memory and the active request; **Clear key** or refresh removes the browser connection. Unsaved key input clears when the dialog closes. Replacing/clearing the key aborts an active request and prevents stale results from appearing.
+Visitors complete this workflow in the browser. They do not need an OpenAI, Anthropic or xAI account/key, a local Python service, a terminal, or an AWS secret configured on Vercel.
 
-Web limits: 48,000 source bytes / 1,200 lines / 2,000 characters per line; 128,000 request-body bytes; one model request; 8,192 maximum output tokens; 110-second request deadline; 256,000 response bytes. The function duration is 120 seconds. Per-instance guards allow one simultaneous review and six attempts per minute per key hash, with four active calls total. This is not a distributed user quota. AWS may charge for a cancelled request that it already processed.
+## Models and routing
 
-Expired keys or denied model permissions produce an actionable error. The static report remains available. No automatic retries, fallback models, generated confidence scores or fabricated findings are used.
+| Model | Bedrock Runtime inference profile |
+| --- | --- |
+| GPT-6.1 Sol | `us.openai.gpt-6.1-sol` |
+| Claude Opus 5.5 | `us.anthropic.claude-opus-5-5` |
+| Grok 4.7 | `us.xai.grok-4.7` |
+
+All requests use Converse at `https://bedrock-runtime.us-east-1.amazonaws.com/model/{modelId}/converse`. The `us.` prefix selects US cross-Region inference; requests may run in another US destination Region. The website accepts no arbitrary destination URL or user-selected model ID.
+
+Claude Opus 5.5 has adaptive thinking always enabled. The request leaves optional model-specific sampling and reasoning parameters at their defaults. Output limits include reasoning where the provider counts it. Only final text blocks are parsed into findings, and the application validates JSON and exact source evidence after generation.
+
+All three models use Converse `outputConfig.textFormat` with the same JSON Schema derived from the report contract, and receive the full formatting contract in their system instructions. GPT-6.1 Sol additionally receives `additionalModelRequestFields.text.format.strict: true`, as required by its Converse interface. The provider receives supported structural constraints; the application retains the stricter length, finding-count, line-range and exact-source checks. See the model cards linked below and [Bedrock structured-output API and schema limits](https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html).
+
+Models supply evidence as `line_start`, `line_end` and `excerpt`. The server checks the integer range, span length, exact source excerpt and duplicate findings before adding `validation: "source-bound"`. A legacy model-supplied `validation` annotation is ignored; it cannot establish or bypass source binding. No source text, line number or substantive finding is repaired to force acceptance. The browser/export contract remains unchanged.
+
+AWS may take additional time to compile a new output schema on its first use. The model deadline still applies; an expired request remains an explicit failure and is not automatically retried.
+
+## Account permissions
+
+The key inherits the permissions of its IAM principal. An administrator should verify:
+
+- `bedrock:CallWithBearerToken` is permitted for the key's identity.
+- `bedrock:InvokeModel` is permitted for the three inference profiles and their foundation models in all destination Regions. Converse uses this permission.
+- The account's default project resource is allowed where required, including Grok: `arn:aws:bedrock:{region}:{account-id}:project/default`.
+- Organization policies and regional controls permit the selected US cross-Region routing.
+- The account has completed any required first-use model enablement. Most commercial-Region models are enabled on first invocation, but a permitted administrator may need to complete Marketplace subscription first. Anthropic may require the first-time use-case form.
+
+Visibility in the Model catalog does not establish invocation permission. Saving a key checks local format only. A successful response from each model establishes access for that run. If one provider returns AccessDenied, check that model's account setup instead of repeatedly generating new keys.
+
+## Website request and result behavior
+
+The browser sends the current source and key to its own `POST /api/reviews` route. The Node.js function sends three concurrent requests with the same review task, formatting instructions and numbered source. Each model works without seeing static findings or another model's output. Static analysis remains a separate view and never contributes a consensus vote.
+
+A complete run has three accepted reviews. A partial run retains successful reviews and names the failed model(s). An all-failed run is explicitly failed. A successful empty finding array, partial coverage, or absence of results never establishes safety.
+
+The application holds the key in the current tab's memory and active server request. Credentials never enter a model prompt, report export, cookie, localStorage, database, shared process environment or application log. Unsaved input clears when the dialog closes. Refresh or **Clear key** removes the browser connection; replacing/clearing the key aborts an active request and prevents stale results from appearing.
+
+Running API analysis sends the contract through this site's server to AWS. The AWS account's permissions, invocation logging settings and model charges apply. The Vercel owner pays function compute. Cancelling cannot guarantee that already-started AWS work stops or is not billed.
+
+| Limit | Value |
+| --- | --- |
+| Source | 48,000 UTF-8 bytes / 1,200 lines / 2,000 characters per line |
+| Request body | 128,000 bytes; 10-second read deadline |
+| Model calls | Three in parallel; no automatic retries or fallback models |
+| Output per model | 8,192 tokens / 256,000 response bytes |
+| Deadline | 180 seconds per model; 210 seconds overall server request |
+| Function duration | 240 seconds, with Vercel Fluid compute enabled |
+
+Per-instance guards allow one simultaneous analysis and six attempts per minute per key hash, with four active analyses total. These are resource bounds, not a distributed quota. Invalid JSON, truncated output or invented source evidence fails the affected model review. API response/export schema **2.0.0** retains model outcomes, accepted original reviews, consensus membership and agreement/severity metadata.
+
+## Troubleshooting
+
+| Outcome | Action |
+| --- | --- |
+| Expired/invalid key | Generate a fresh `us-east-1` key from the active DevX AWS session and replace it in the website. |
+| Access denied for one model | Verify its inference-profile, foundation-model and applicable default-project permissions; complete first-use requirements. |
+| Wrong Region | Generate the key in `us-east-1`; changing the browser display does not re-scope a key. |
+| Quota or throttling | Wait or ask the account administrator to review that model's quota. The app does not retry automatically. |
+| Timeout | Use a shorter contract or retry manually when appropriate. Preserve successful partial reviews for inspection. |
+| Report format rejected | Open the model status to see the rejected field and constraint. This means returned JSON failed the local schema. The diagnostic excludes raw model values and unknown property names. |
+| Invalid/truncated model output | Treat that model as failed; inspect other outcomes. Do not interpret a parsing failure as a clean contract. |
+
+## Verification boundary
+
+Automated web checks use mocked Bedrock responses and synthetic fixtures to verify request shape, parallel dispatch, evidence binding, consolidation and failure behavior. They do not use DTCC credentials, establish real account access, or measure detection accuracy. Perform a separate authorized live check and inspect all three model outcomes before reporting the connection as verified.
 
 ## Optional Python service (terminal workflow)
 
@@ -49,7 +115,7 @@ The selected Astra profile uses US cross-Region inference through `bedrock-runti
 
 The retained service exposes `/api/audits`, `/api/config` and `/api/reviews` on `127.0.0.1:8000` for direct API clients. Use the web key form for the current website workflow.
 
-## Endpoint profiles
+### Legacy endpoint profiles
 
 | Protocol | Endpoint | Model ID |
 | --- | --- | --- |
@@ -60,7 +126,7 @@ Mantle uses `x-api-key`, the Anthropic version header and the `default` workspac
 
 Alternatively, supply `AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION`, `BEDROCK_MODEL_ID` and `BEDROCK_PROTOCOL` in the API process environment. The old `BEDROCK_API_KEY` variable remains a fallback. No `NEXT_PUBLIC_` secret is used. Plain `scripts/start_api.py` starts without interactive prompts and uses the environment as configured.
 
-## Request and result behavior
+### Legacy request and result behavior
 
 - One request to one model; no automatic retries or tool execution. Maximum output: 4,096 tokens; wall-clock limit: 55 seconds; upstream response cap: 128 KB.
 - One concurrent review per local API process. This is a local resource bound, not a distributed hosting quota.
@@ -71,9 +137,9 @@ Alternatively, supply `AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION`, `BEDROCK_MODEL_I
 - Editing, changing a case or cancelling prevents late responses from overwriting a newer snapshot. Cancelling stops the browser wait; AWS may already be processing the request and may still bill it.
 - Source is sent only when the user starts API analysis. No source database, browser persistence or raw-response logging is implemented. AWS account logging settings remain outside this repository.
 
-The Vercel build supports both on-device static analysis and visitor-key model review through the Next.js route. Application accounts, sponsor-funded usage, distributed quotas and multi-agent job orchestration remain separate future work.
+The Python service is retained for compatibility. Its single-model results and limits do not describe the web orchestration workflow above.
 
-## Verification boundary
+### Legacy verification boundary
 
 Automated tests use HTTPX mock transports for both AWS protocols and browser fixtures for model success/failure. They verify application behavior without AWS credentials or charges. Real account permissions, credentials, endpoint connectivity and model quality have **not** been verified by those tests.
 
@@ -81,8 +147,11 @@ Launcher regression tests use a synthetic key longer than 8,000 characters and a
 
 ## Primary references
 
-- [AWS Bedrock API keys](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-use.html)
-- [GPT-6 Astra: IDs, regions and supported APIs](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-astra.html)
+- [Bedrock API keys and console generation](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html)
+- [API key permissions](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-permissions.html)
+- [Inference-profile prerequisites](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-prereq.html)
+- [First-use model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html)
+- [GPT-6.1 Sol](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-1-sol.html)
+- [Claude Opus 5.5](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-5-5.html)
+- [Grok 4.7](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-7.html)
 - [Converse API](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html)
-- [Anthropic Messages API on Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.html)
-- [Bedrock endpoint differences](https://docs.aws.amazon.com/bedrock/latest/userguide/endpoints.html)
