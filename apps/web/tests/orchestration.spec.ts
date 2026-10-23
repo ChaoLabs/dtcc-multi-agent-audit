@@ -5,9 +5,13 @@ import {
   buildCouncilReport,
   validateCouncil,
   type ModelRun,
+  type ModelAttempt,
   type CouncilReport,
+  type ExecutionProvenance,
 } from "../src/lib/orchestration";
-import { sha256, sourceLines } from "../src/lib/static-analysis";
+import { councilMarkdown } from "../src/lib/council-export";
+import { analyzeStatic, sha256, sourceLines } from "../src/lib/static-analysis";
+import { POLICY_VERSION, PROMPT_VERSION } from "../src/lib/review-policy";
 
 const source = [
   "pragma solidity ^0.8.20;",
@@ -518,4 +522,308 @@ test("contradictory failure entries and secret-bearing error text are rejected",
       20,
     ),
   ).rejects.toThrow();
+});
+
+function execution(totalAttempts = 3): ExecutionProvenance {
+  return {
+    policy_version: POLICY_VERSION,
+    prompt_variant: "baseline",
+    prompt_version: PROMPT_VERSION,
+    max_attempts_per_model: 2,
+    model_timeout_ms: 180_000,
+    overall_timeout_ms: 210_000,
+    total_attempts: totalAttempts,
+  };
+}
+
+async function trackedRuns(contributions: (ReviewFinding[] | null)[]) {
+  return (await runs(contributions)).map((model) => ({
+    ...model,
+    attempts: [
+      {
+        attempt: 1,
+        status: model.status,
+        elapsed_ms: model.elapsed_ms,
+        error_code: model.error?.code ?? null,
+        retry_delay_ms: 0,
+      },
+    ],
+  }));
+}
+
+test("bounded reports preserve retry provenance and successful-attempt usage", async () => {
+  const models = await trackedRuns([[finding()], [], null]);
+  models[0].attempts.unshift({
+    attempt: 1,
+    status: "failed",
+    elapsed_ms: 10,
+    error_code: "bedrock_rate_limit",
+    retry_delay_ms: 0,
+  });
+  models[0].attempts[1].attempt = 2;
+  models[0].attempts[1].retry_delay_ms = 500;
+  models[0].elapsed_ms = 522;
+  const report = await buildCouncilReport(models, source, 530, execution(4));
+  expect(report.schema_version).toBe("2.1.0");
+  expect(report.execution?.total_attempts).toBe(4);
+  expect(report.models[0].review?.elapsed_ms).toBe(12);
+  expect(report.models[0].elapsed_ms).toBe(522);
+  expect(
+    await validateCouncil(JSON.parse(JSON.stringify(report)), source),
+  ).toEqual(report);
+  expect(report.review_queue).toEqual([
+    {
+      finding_id: report.findings[0].id,
+      reasons: ["not_reported_by_all_reviewers", "incomplete_model_coverage"],
+      supporting_models: [BEDROCK_MODELS[0].id],
+      not_reported_models: [BEDROCK_MODELS[1].id],
+      unavailable_models: [BEDROCK_MODELS[2].id],
+      action: "manual_review",
+    },
+  ]);
+});
+
+test("severity disagreements enter review even when all three models report the weakness", async () => {
+  const models = await trackedRuns([
+    [finding("Reentrancy", 6, 6, "reentrancy", "LOW")],
+    [finding("Reentrant call", 5, 8, "reentrancy", "HIGH")],
+    [finding("Withdrawal", 6, 8, "reentrancy", "MEDIUM")],
+  ]);
+  const report = await buildCouncilReport(models, source, 20, execution());
+  expect(report.findings[0].agreement).toBe(3);
+  expect(report.findings[0].proposed_severity).toBe("HIGH");
+  expect(report.review_queue?.[0].reasons).toEqual(["severity_disagreement"]);
+  expect(report.review_queue?.[0].not_reported_models).toEqual([]);
+  expect(report.review_queue?.[0].unavailable_models).toEqual([]);
+});
+
+test("unanimous retained findings have no disagreement flags without claiming verification", async () => {
+  const report = await buildCouncilReport(
+    await trackedRuns([[finding()], [finding()], [finding()]]),
+    source,
+    20,
+    execution(),
+  );
+  expect(report.review_queue).toEqual([]);
+  expect(report.findings[0].evidence.validation).toBe("source-bound");
+});
+
+test("a deadline during backoff preserves the transient cause without inventing a second request", async () => {
+  const models = await trackedRuns([[], null, null]);
+  models[1].error = { code: "timeout", detail: "Model deadline exhausted." };
+  models[1].attempts[0].error_code = "bedrock_rate_limit";
+  models[1].elapsed_ms = 500;
+  models[2].attempts = [];
+  models[2].error = {
+    code: "timeout",
+    detail: "Deadline reached before dispatch.",
+  };
+  const report = await buildCouncilReport(models, source, 500, execution(2));
+  expect(report.execution?.total_attempts).toBe(2);
+  expect(report.models[1].attempts?.[0].error_code).toBe("bedrock_rate_limit");
+  expect(report.models[1].error?.code).toBe("timeout");
+  expect(report.status).toBe("partial");
+  expect(await validateCouncil(report, source)).toEqual(report);
+});
+
+for (const [name, change] of [
+  [
+    "missing attempt history",
+    (report: CouncilReport) => {
+      delete report.models[0].attempts;
+    },
+  ],
+  [
+    "request count",
+    (report: CouncilReport) => {
+      report.execution!.total_attempts = 2;
+    },
+  ],
+  [
+    "unknown prompt variant",
+    (report: CouncilReport) => {
+      (report.execution as unknown as Record<string, unknown>).prompt_variant =
+        "hidden-provider-prompt";
+    },
+  ],
+  [
+    "unknown prompt version",
+    (report: CouncilReport) => {
+      (report.execution as unknown as Record<string, unknown>).prompt_version =
+        "unversioned";
+    },
+  ],
+  [
+    "unbounded model deadline",
+    (report: CouncilReport) => {
+      report.execution!.model_timeout_ms = 180_001;
+    },
+  ],
+  [
+    "unbounded overall deadline",
+    (report: CouncilReport) => {
+      report.execution!.overall_timeout_ms = 210_001;
+    },
+  ],
+  [
+    "attempt sequence",
+    (report: CouncilReport) => {
+      report.models[0].attempts![0].attempt = 2;
+    },
+  ],
+  [
+    "first-request retry delay",
+    (report: CouncilReport) => {
+      report.models[0].attempts![0].retry_delay_ms = 500;
+    },
+  ],
+  [
+    "contradictory attempt result",
+    (report: CouncilReport) => {
+      report.models[0].attempts![0].status = "failed";
+      report.models[0].attempts![0].error_code = "bedrock_access";
+    },
+  ],
+  [
+    "attempt elapsed time",
+    (report: CouncilReport) => {
+      report.models[0].attempts![0].elapsed_ms = 1000;
+    },
+  ],
+  [
+    "successful review duration",
+    (report: CouncilReport) => {
+      report.models[0].attempts![0].elapsed_ms = 1;
+    },
+  ],
+  [
+    "overall elapsed time",
+    (report: CouncilReport) => {
+      report.elapsed_ms = 1;
+    },
+  ],
+  [
+    "erased review queue",
+    (report: CouncilReport) => {
+      report.review_queue!.length = 0;
+    },
+  ],
+  [
+    "non-reporting mislabeled unavailable",
+    (report: CouncilReport) => {
+      report.review_queue![0].unavailable_models = [BEDROCK_MODELS[1].id];
+    },
+  ],
+  [
+    "unjustified manual decision",
+    (report: CouncilReport) => {
+      (report.review_queue![0] as unknown as Record<string, unknown>).action =
+        "verified-vulnerability";
+    },
+  ],
+] as const) {
+  test(`bounded client report rejects ${name}`, async () => {
+    const report = await buildCouncilReport(
+      await trackedRuns([[finding()], [], null]),
+      source,
+      20,
+      execution(),
+    );
+    change(report);
+    await expect(validateCouncil(report, source)).rejects.toThrow();
+  });
+}
+
+test("attempt histories cannot turn an access or evidence failure into an automatic retry", async () => {
+  for (const code of [
+    "bedrock_access",
+    "invalid_evidence",
+    "invalid_review",
+    "review_failed",
+  ]) {
+    const models = await trackedRuns([[], [], []]);
+    models[0].attempts.unshift({
+      attempt: 1,
+      status: "failed",
+      elapsed_ms: 1,
+      error_code: code,
+      retry_delay_ms: 0,
+    });
+    models[0].attempts[1].attempt = 2;
+    models[0].elapsed_ms = 13;
+    await expect(
+      buildCouncilReport(models, source, 20, execution(4)),
+    ).rejects.toThrow("non-transient");
+  }
+});
+
+test("a third request exceeds the hard per-model and overall request budget", async () => {
+  const models = await trackedRuns([[], [], []]);
+  models[0].attempts = [1, 2]
+    .map<ModelAttempt>((attempt) => ({
+      attempt,
+      status: "failed",
+      elapsed_ms: 1,
+      error_code: "bedrock_unavailable",
+      retry_delay_ms: 0,
+    }))
+    .concat([
+      {
+        attempt: 3,
+        status: "succeeded",
+        elapsed_ms: 12,
+        error_code: null,
+        retry_delay_ms: 0,
+      },
+    ]);
+  models[0].elapsed_ms = 14;
+  await expect(
+    buildCouncilReport(models, source, 20, execution(5)),
+  ).rejects.toThrow("attempt history");
+  await expect(
+    buildCouncilReport(
+      await trackedRuns([[], [], []]),
+      source,
+      20,
+      execution(7),
+    ),
+  ).rejects.toThrow("policy");
+});
+
+test("legacy reports cannot acquire unvalidated execution metadata", async () => {
+  const report = await buildCouncilReport(await runs([[], [], []]), source, 20);
+  await expect(
+    validateCouncil({ ...report, execution: execution() }, source),
+  ).rejects.toThrow();
+});
+
+test("Markdown exports execution limits, full contribution provenance and separate uncertainty reasons", async () => {
+  const models = await trackedRuns([
+    [finding("Reentrancy | <script>")],
+    [],
+    null,
+  ]);
+  const report = await buildCouncilReport(models, source, 20, {
+    ...execution(),
+    prompt_variant: "few-shot",
+  });
+  const text = councilMarkdown(
+    await analyzeStatic("Vault.sol", source),
+    report,
+  );
+  expect(text).toContain("Prompt: independent-review-v2 / few-shot");
+  expect(text).toContain("Requests made: 3 / 6 maximum");
+  expect(text).toContain("Attempt 1: succeeded");
+  expect(text).toContain(
+    "successful attempt only; failed requests may also be billed",
+  );
+  expect(text).toContain(
+    `Not reported by: ${BEDROCK_MODELS[1].label.replace(/\./g, "\\.")}`,
+  );
+  expect(text).toContain(
+    `Unavailable: ${BEDROCK_MODELS[2].label.replace(/\./g, "\\.")}`,
+  );
+  expect(text).toContain("does not add a fourth LLM");
+  expect(text).toContain("Reentrancy \\| \\<script\\>");
+  expect(text).toContain("#### Model contributions");
 });

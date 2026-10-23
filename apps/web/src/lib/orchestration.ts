@@ -1,6 +1,12 @@
 import type { ModelReview, ReviewFinding } from "@/generated/review";
 import { BEDROCK, BEDROCK_MODELS } from "@/lib/bedrock-config";
 import { validateModelReview } from "@/lib/report";
+import {
+  POLICY_VERSION,
+  PROMPT_VERSION,
+  REVIEW_POLICY,
+  type PromptVariant,
+} from "@/lib/review-policy";
 import { sha256, sourceLines } from "@/lib/static-analysis";
 
 /** Shared vocabulary for independent model prompts and deterministic aggregation. */
@@ -23,6 +29,15 @@ export const CATEGORIES = [
   "other",
 ] as const;
 
+export type ModelAttempt = {
+  attempt: number;
+  status: "succeeded" | "failed";
+  elapsed_ms: number;
+  error_code: string | null;
+  /** Delay before this request. The first request always has a zero delay. */
+  retry_delay_ms: number;
+};
+
 export type ModelRun = {
   model_id: string;
   label: string;
@@ -30,6 +45,8 @@ export type ModelRun = {
   elapsed_ms: number;
   review: ModelReview | null;
   error: { code: string; detail: string } | null;
+  /** Absent only in legacy 2.0 reports, which did not record attempts. */
+  attempts?: ModelAttempt[];
 };
 
 export type ConsensusFinding = ReviewFinding & {
@@ -41,8 +58,30 @@ export type ConsensusFinding = ReviewFinding & {
   severity_disagreement: boolean;
 };
 
-export type CouncilReport = {
-  schema_version: "2.0.0";
+export type ExecutionProvenance = {
+  policy_version: typeof POLICY_VERSION;
+  prompt_variant: PromptVariant;
+  prompt_version: typeof PROMPT_VERSION;
+  max_attempts_per_model: 2;
+  model_timeout_ms: number;
+  overall_timeout_ms: number;
+  total_attempts: number;
+};
+
+export type ReviewQueueItem = {
+  finding_id: string;
+  reasons: (
+    | "severity_disagreement"
+    | "not_reported_by_all_reviewers"
+    | "incomplete_model_coverage"
+  )[];
+  supporting_models: string[];
+  not_reported_models: string[];
+  unavailable_models: string[];
+  action: "manual_review";
+};
+
+type CouncilBase = {
   engine: "evidence-consensus";
   source_sha256: string;
   created_at: string;
@@ -51,6 +90,20 @@ export type CouncilReport = {
   models: ModelRun[];
   findings: ConsensusFinding[];
 };
+
+export type CouncilReport = CouncilBase &
+  (
+    | {
+        schema_version: "2.0.0";
+        execution?: never;
+        review_queue?: never;
+      }
+    | {
+        schema_version: "2.1.0";
+        execution: ExecutionProvenance;
+        review_queue: ReviewQueueItem[];
+      }
+  );
 
 const severityRank = { HIGH: 3, MEDIUM: 2, LOW: 1 } as const;
 const maximumElapsedMs = 3_600_000;
@@ -232,9 +285,105 @@ function timestamp(value: unknown): value is string {
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
 }
 
+function errorCode(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z][a-z0-9_]{0,79}$/.test(value);
+}
+
+function validateExecution(value: unknown): ExecutionProvenance {
+  if (
+    !record(value) ||
+    !exactKeys(value, [
+      "policy_version",
+      "prompt_variant",
+      "prompt_version",
+      "max_attempts_per_model",
+      "model_timeout_ms",
+      "overall_timeout_ms",
+      "total_attempts",
+    ]) ||
+    value.policy_version !== POLICY_VERSION ||
+    value.prompt_version !== PROMPT_VERSION ||
+    !["baseline", "few-shot"].includes(value.prompt_variant as string) ||
+    value.max_attempts_per_model !== REVIEW_POLICY.max_attempts_per_model ||
+    !duration(value.model_timeout_ms) ||
+    value.model_timeout_ms < 1 ||
+    value.model_timeout_ms > REVIEW_POLICY.model_timeout_ms ||
+    !duration(value.overall_timeout_ms) ||
+    value.overall_timeout_ms < 1 ||
+    value.overall_timeout_ms > REVIEW_POLICY.overall_timeout_ms ||
+    !Number.isSafeInteger(value.total_attempts) ||
+    (value.total_attempts as number) < 0 ||
+    (value.total_attempts as number) > REVIEW_POLICY.max_provider_requests
+  )
+    throw new Error("Invalid bounded orchestration policy.");
+  return value as ExecutionProvenance;
+}
+
+function validateAttempts(entry: ModelRun) {
+  const attempts = entry.attempts;
+  if (
+    !Array.isArray(attempts) ||
+    attempts.length > REVIEW_POLICY.max_attempts_per_model
+  )
+    throw new Error("Invalid model attempt history.");
+  const terminalTimeout =
+    entry.status === "failed" &&
+    ["timeout", "cancelled"].includes(entry.error?.code ?? "");
+  if (!attempts.length) {
+    if (!terminalTimeout)
+      throw new Error(
+        "A model without requests must have an explicit timeout.",
+      );
+    return;
+  }
+  let measured = 0;
+  for (const [index, attempt] of attempts.entries()) {
+    if (
+      !record(attempt) ||
+      !exactKeys(attempt, [
+        "attempt",
+        "status",
+        "elapsed_ms",
+        "error_code",
+        "retry_delay_ms",
+      ]) ||
+      attempt.attempt !== index + 1 ||
+      !duration(attempt.elapsed_ms) ||
+      !duration(attempt.retry_delay_ms) ||
+      attempt.retry_delay_ms > 5_000 ||
+      (index === 0 && attempt.retry_delay_ms !== 0) ||
+      (attempt.status !== "succeeded" && attempt.status !== "failed") ||
+      (attempt.status === "succeeded"
+        ? attempt.error_code !== null || index !== attempts.length - 1
+        : !errorCode(attempt.error_code))
+    )
+      throw new Error("Invalid model attempt history.");
+    if (
+      index > 0 &&
+      (attempts[index - 1].status !== "failed" ||
+        !["bedrock_rate_limit", "bedrock_unavailable"].includes(
+          attempts[index - 1].error_code ?? "",
+        ))
+    )
+      throw new Error("A non-transient failure cannot be retried.");
+    measured += attempt.elapsed_ms + attempt.retry_delay_ms;
+  }
+  const last = attempts[attempts.length - 1];
+  if (
+    measured > entry.elapsed_ms ||
+    last.status !== entry.status ||
+    (entry.status === "failed" &&
+      !terminalTimeout &&
+      last.error_code !== entry.error?.code) ||
+    (entry.review && entry.review.elapsed_ms > last.elapsed_ms)
+  )
+    throw new Error("Attempt history does not match the model outcome.");
+}
+
 async function validateModels(
   value: unknown,
   source: string,
+  withAttempts = false,
 ): Promise<ModelRun[]> {
   if (!Array.isArray(value) || value.length !== BEDROCK_MODELS.length)
     throw new Error("Every configured model must have an explicit outcome.");
@@ -250,6 +399,7 @@ async function validateModels(
         "elapsed_ms",
         "review",
         "error",
+        ...(withAttempts ? ["attempts"] : []),
       ])
     )
       throw new Error("Invalid model outcome.");
@@ -272,7 +422,9 @@ async function validateModels(
         review.protocol !== BEDROCK.protocol ||
         !timestamp(review.created_at) ||
         !duration(review.elapsed_ms) ||
-        review.elapsed_ms !== entry.elapsed_ms ||
+        (withAttempts
+          ? review.elapsed_ms > entry.elapsed_ms
+          : review.elapsed_ms !== entry.elapsed_ms) ||
         [review.input_tokens, review.output_tokens].some(
           (tokens) =>
             tokens !== null &&
@@ -287,8 +439,7 @@ async function validateModels(
         entry.review !== null ||
         !record(entry.error) ||
         !exactKeys(entry.error, ["code", "detail"]) ||
-        typeof entry.error.code !== "string" ||
-        !/^[a-z][a-z0-9_]{0,79}$/.test(entry.error.code) ||
+        !errorCode(entry.error.code) ||
         typeof entry.error.detail !== "string" ||
         entry.error.detail.length < 1 ||
         entry.error.detail.length > 1000 ||
@@ -298,6 +449,7 @@ async function validateModels(
     } else {
       throw new Error("Invalid model status.");
     }
+    if (withAttempts) validateAttempts(entry as ModelRun);
     models.push(entry as ModelRun);
   }
   return BEDROCK_MODELS.map((config) =>
@@ -385,24 +537,87 @@ function outcome(models: ModelRun[]): CouncilReport["status"] {
       : "partial";
 }
 
+/**
+ * A review queue preserves uncertainty instead of asking a fourth model to
+ * manufacture a verdict. Non-reporting and unavailable reviewers stay distinct.
+ */
+export function buildReviewQueue(
+  models: ModelRun[],
+  findings: ConsensusFinding[],
+): ReviewQueueItem[] {
+  return findings.flatMap((finding) => {
+    const notReported = models
+      .filter(
+        (model) =>
+          model.status === "succeeded" &&
+          !finding.supporting_models.includes(model.model_id),
+      )
+      .map((model) => model.model_id);
+    const unavailable = models
+      .filter((model) => model.status === "failed")
+      .map((model) => model.model_id);
+    const reasons: ReviewQueueItem["reasons"] = [];
+    if (finding.severity_disagreement) reasons.push("severity_disagreement");
+    if (notReported.length) reasons.push("not_reported_by_all_reviewers");
+    if (unavailable.length) reasons.push("incomplete_model_coverage");
+    return reasons.length
+      ? [
+          {
+            finding_id: finding.id,
+            reasons,
+            supporting_models: [...finding.supporting_models],
+            not_reported_models: notReported,
+            unavailable_models: unavailable,
+            action: "manual_review" as const,
+          },
+        ]
+      : [];
+  });
+}
+
+function validateAccounting(
+  execution: ExecutionProvenance,
+  models: ModelRun[],
+  elapsedMs: number,
+) {
+  if (
+    execution.total_attempts !==
+      models.reduce((count, model) => count + model.attempts!.length, 0) ||
+    models.some((model) => model.elapsed_ms > elapsedMs)
+  )
+    throw new Error("Execution accounting does not match the model outcomes.");
+}
+
 export async function buildCouncilReport(
   models: ModelRun[],
   source: string,
   elapsedMs: number,
+  execution?: ExecutionProvenance,
 ): Promise<CouncilReport> {
   if (!duration(elapsedMs)) throw new Error("Invalid orchestration duration.");
-  const checked = await validateModels(models, source);
+  const policy =
+    execution === undefined ? undefined : validateExecution(execution);
+  const checked = await validateModels(models, source, !!policy);
+  if (policy) validateAccounting(policy, checked, elapsedMs);
   const hash = await sha256(source);
-  return {
-    schema_version: "2.0.0",
-    engine: "evidence-consensus",
+  const findings = await aggregate(checked, source, hash);
+  const report: CouncilBase = {
+    engine: "evidence-consensus" as const,
     source_sha256: hash,
     created_at: new Date().toISOString(),
     elapsed_ms: elapsedMs,
     status: outcome(checked),
     models: checked,
-    findings: await aggregate(checked, source, hash),
+    findings,
   };
+  return policy
+    ? {
+        ...report,
+        schema_version: "2.1.0",
+        execution: policy,
+        review_queue: buildReviewQueue(checked, findings),
+      }
+    : { ...report, schema_version: "2.0.0" };
 }
 
 function equivalent(actual: unknown, expected: unknown): boolean {
@@ -429,6 +644,7 @@ export async function validateCouncil(
   value: unknown,
   source: string,
 ): Promise<CouncilReport> {
+  const withExecution = record(value) && value.schema_version === "2.1.0";
   if (
     !record(value) ||
     !exactKeys(value, [
@@ -440,8 +656,9 @@ export async function validateCouncil(
       "status",
       "models",
       "findings",
+      ...(withExecution ? ["execution", "review_queue"] : []),
     ]) ||
-    value.schema_version !== "2.0.0" ||
+    (!withExecution && value.schema_version !== "2.0.0") ||
     value.engine !== "evidence-consensus" ||
     !timestamp(value.created_at) ||
     !duration(value.elapsed_ms)
@@ -450,12 +667,16 @@ export async function validateCouncil(
   const hash = await sha256(source);
   if (value.source_sha256 !== hash)
     throw new Error("Orchestration report does not match this source.");
-  const models = await validateModels(value.models, source);
+  const policy = withExecution ? validateExecution(value.execution) : undefined;
+  const models = await validateModels(value.models, source, withExecution);
+  if (policy) validateAccounting(policy, models, value.elapsed_ms);
   const findings = await aggregate(models, source, hash);
   if (
     value.status !== outcome(models) ||
     !equivalent(value.models, models) ||
-    !equivalent(value.findings, findings)
+    !equivalent(value.findings, findings) ||
+    (withExecution &&
+      !equivalent(value.review_queue, buildReviewQueue(models, findings)))
   )
     throw new Error(
       "Orchestration findings do not match the validated model contributions.",

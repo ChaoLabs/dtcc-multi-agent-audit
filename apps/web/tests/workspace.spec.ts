@@ -5,11 +5,17 @@ import type { ReviewFinding } from "../src/generated/review";
 import { BEDROCK, BEDROCK_MODELS } from "../src/lib/bedrock-config";
 import { buildCouncilReport, type ModelRun } from "../src/lib/orchestration";
 import { analyzeStatic } from "../src/lib/static-analysis";
+import {
+  POLICY_VERSION,
+  PROMPT_VERSION,
+  type PromptVariant,
+} from "../src/lib/review-policy";
 
 async function councilFixture(
   contributions: (number[] | null)[] = [[0], [0], [0]],
+  caseIndex = 0,
 ) {
-  const { filename, source } = cases[0].report.input;
+  const { filename, source } = cases[caseIndex].report.input;
   const baseline = await analyzeStatic(filename, source);
   const findings: ReviewFinding[] = baseline.candidates.map((finding) => ({
     title: finding.title,
@@ -69,6 +75,60 @@ async function councilFixture(
           },
   }));
   return { baseline, council: await buildCouncilReport(models, source, 50) };
+}
+
+async function supervisedFixture(
+  caseIndex = 0,
+  variant: PromptVariant = "baseline",
+  retry = false,
+  contributions: (number[] | null)[] = [[0], [0], [0]],
+) {
+  const { council } = await councilFixture(contributions, caseIndex);
+  const models: ModelRun[] = council.models.map((model, index) => ({
+    ...model,
+    elapsed_ms: retry && index === 0 ? 543 : 42,
+    attempts:
+      retry && index === 0
+        ? [
+            {
+              attempt: 1,
+              status: "failed",
+              elapsed_ms: 1,
+              error_code: "bedrock_rate_limit",
+              retry_delay_ms: 0,
+            },
+            {
+              attempt: 2,
+              status: "succeeded",
+              elapsed_ms: 42,
+              error_code: null,
+              retry_delay_ms: 500,
+            },
+          ]
+        : [
+            {
+              attempt: 1,
+              status: model.status,
+              elapsed_ms: 42,
+              error_code: model.error?.code ?? null,
+              retry_delay_ms: 0,
+            },
+          ],
+  }));
+  return buildCouncilReport(
+    models,
+    cases[caseIndex].report.input.source,
+    retry ? 550 : 50,
+    {
+      policy_version: POLICY_VERSION,
+      prompt_variant: variant,
+      prompt_version: PROMPT_VERSION,
+      max_attempts_per_model: 2,
+      model_timeout_ms: 180_000,
+      overall_timeout_ms: 210_000,
+      total_attempts: retry ? 4 : 3,
+    },
+  );
 }
 
 async function runApi(page: import("@playwright/test").Page) {
@@ -839,4 +899,245 @@ test("desktop panes stay anchored; mobile source links reveal the code", async (
   await expect(
     page.getByRole("button", { name: "Run static analysis", exact: true }),
   ).toBeInViewport();
+});
+
+test("guided prompt is explicit and changing it does not start a paid analysis", async ({
+  page,
+}) => {
+  const requests: Record<string, unknown>[] = [];
+  const council = await supervisedFixture(0, "few-shot");
+  await page.route("**/api/reviews", async (route) => {
+    requests.push(route.request().postDataJSON());
+    await route.fulfill({ json: council });
+  });
+  await page.goto(production);
+  await apiMode(page);
+  const prompt = page.getByLabel("Review prompt", { exact: true });
+  await expect(prompt).toHaveValue("baseline");
+  await prompt.selectOption("few-shot");
+  expect(requests).toEqual([]);
+  await page
+    .getByRole("button", { name: "Run API analysis", exact: true })
+    .click();
+  await expect(page.locator(".council-model.succeeded")).toHaveCount(3);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({
+    prompt_variant: "few-shot",
+    filename: cases[0].report.input.filename,
+    source: cases[0].report.input.source,
+  });
+  expect(
+    await page.evaluate(() => [localStorage.length, sessionStorage.length]),
+  ).toEqual([0, 0]);
+});
+
+test("five-contract validation requires an explicit run and exports traceable credential-free results", async ({
+  page,
+}, testInfo) => {
+  const requests: {
+    filename: string;
+    source: string;
+    prompt_variant: string;
+  }[] = [];
+  await page.route("**/api/reviews", async (route) => {
+    const input = route.request().postDataJSON();
+    requests.push(input);
+    const index = cases.findIndex(
+      (item) => item.report.input.filename === input.filename,
+    );
+    expect(index).toBeGreaterThanOrEqual(0);
+    await route.fulfill({
+      json: await supervisedFixture(index, "few-shot", false, [[], [], []]),
+    });
+  });
+  await page.goto(production);
+  await apiMode(page);
+  await page
+    .getByRole("button", { name: "Validate 5 cases", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Five-contract validation",
+    exact: true,
+  });
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByRole("list", { name: "Validation cases" }).locator("li"),
+  ).toHaveCount(5);
+  await dialog
+    .getByLabel("Validation prompt", { exact: true })
+    .selectOption("few-shot");
+  expect(requests).toHaveLength(0);
+  await dialog
+    .getByRole("button", { name: "Run five-case validation", exact: true })
+    .click();
+  await expect(dialog.locator(".validation-status")).toContainText(
+    "5 / 5 cases with results",
+  );
+  await expect(dialog.locator(".validation-status")).toContainText("completed");
+  expect(requests).toHaveLength(5);
+  expect(requests.map((item) => item.filename)).toEqual(
+    cases.map((item) => item.report.input.filename),
+  );
+  expect(requests.every((item) => item.prompt_variant === "few-shot")).toBe(
+    true,
+  );
+  const download = page.waitForEvent("download");
+  await dialog
+    .getByRole("button", { name: "Download validation JSON", exact: true })
+    .click();
+  const result = JSON.parse(
+    await readFile((await (await download).path())!, "utf8"),
+  );
+  expect(result.status).toBe("completed");
+  expect(result.prompt_variant).toBe("few-shot");
+  expect(result.metrics).toMatchObject({
+    completed_cases: 5,
+    successful_model_reviews: 15,
+    observed_attempts: 15,
+  });
+  expect(result.cases).toHaveLength(5);
+  expect(result.case_caveats).toHaveLength(5);
+  expect(JSON.stringify(result)).not.toContain("SYNTHETIC_BROWSER_TEST");
+  expect(
+    await page.evaluate(() => [localStorage.length, sessionStorage.length]),
+  ).toEqual([0, 0]);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await expect(
+    dialog.getByRole("button", { name: "Close validation", exact: true }),
+  ).toBeInViewport();
+  if (testInfo.project.name === "mobile") {
+    const run = dialog.getByRole("button", {
+      name: "Run five-case validation",
+      exact: true,
+    });
+    await run.scrollIntoViewIfNeeded();
+    const bounds = await run.boundingBox();
+    expect(bounds!.width).toBeGreaterThan(260);
+    expect(bounds!.height).toBeLessThan(100);
+  }
+  await page.screenshot({
+    path: testInfo.outputPath("five-contract-validation-results.png"),
+    fullPage: false,
+  });
+  await dialog.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await page.screenshot({
+    path: testInfo.outputPath("five-contract-validation.png"),
+    fullPage: false,
+  });
+});
+
+test("validation cancellation keeps the completed case and does not start the remaining cases", async ({
+  page,
+}) => {
+  let requests = 0;
+  let release: () => void = () => {};
+  let secondStarted: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const second = new Promise<void>((resolve) => {
+    secondStarted = resolve;
+  });
+  await page.route("**/api/reviews", async (route) => {
+    const index = requests++;
+    if (index === 1) {
+      secondStarted();
+      await held;
+    }
+    await route
+      .fulfill({
+        json: await supervisedFixture(index, "baseline", false, [[], [], []]),
+      })
+      .catch(() => {});
+  });
+  await page.goto(production);
+  await apiMode(page);
+  await page
+    .getByRole("button", { name: "Validate 5 cases", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Five-contract validation",
+    exact: true,
+  });
+  await dialog
+    .getByRole("button", { name: "Run five-case validation", exact: true })
+    .click();
+  await second;
+  await expect(dialog.locator(".validation-status")).toContainText(
+    "1 / 5 cases with results",
+  );
+  await expect(
+    dialog.getByLabel("Validation prompt", { exact: true }),
+  ).toBeDisabled();
+  await dialog
+    .getByRole("button", { name: "Cancel validation", exact: true })
+    .click();
+  release();
+  await expect(dialog.locator(".validation-status")).toContainText("cancelled");
+  const download = page.waitForEvent("download");
+  await dialog
+    .getByRole("button", { name: "Download validation JSON", exact: true })
+    .click();
+  const result = JSON.parse(
+    await readFile((await (await download).path())!, "utf8"),
+  );
+  expect(result.cases.map((item: { status: string }) => item.status)).toEqual([
+    "completed",
+    "cancelled",
+    "pending",
+    "pending",
+    "pending",
+  ]);
+  expect(result.cases[0].report.models).toHaveLength(3);
+  expect(result.metrics.successful_model_reviews).toBe(3);
+  expect(requests).toBe(2);
+});
+
+test("retried reviews show their attempt history and retain severity disagreements for review", async ({
+  page,
+}, testInfo) => {
+  const council = await supervisedFixture(0, "baseline", true);
+  await page.route("**/api/reviews", (route) =>
+    route.fulfill({ json: council }),
+  );
+  await page.goto(production);
+  await runApi(page);
+  await expect(page.locator(".consensus-summary")).toContainText(
+    "4 / 6 attempts",
+  );
+  const queue = page.getByRole("button", { name: /^Review queue/ });
+  await expect(queue).toContainText("1");
+  await queue.click();
+  await expect(page.locator(".finding")).toHaveCount(1);
+  await expect(
+    page.getByText("Severity differs across models", { exact: true }),
+  ).toBeVisible();
+  await page.locator(".council-model").first().locator("summary").click();
+  const history = page.getByRole("list", {
+    name: `${BEDROCK_MODELS[0].label} attempt history`,
+  });
+  await expect(history.locator("li")).toHaveCount(2);
+  await expect(history).toContainText("Attempt 1 · failed");
+  await expect(history).toContainText("bedrock_rate_limit");
+  await expect(history).toContainText("Attempt 2 · succeeded");
+  if (testInfo.project.name === "mobile") {
+    expect((await history.boundingBox())!.width).toBeGreaterThan(240);
+    await history.locator("li").last().scrollIntoViewIfNeeded();
+    await expect(history.locator("li").last()).toBeInViewport();
+  }
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({
+    path: testInfo.outputPath("retry-and-disagreement.png"),
+    fullPage: true,
+  });
+  const result = await exportedJson(page);
+  expect(result.council.execution.total_attempts).toBe(4);
+  expect(result.council.review_queue).toEqual(council.review_queue);
+  expect(result.council.models[0].attempts).toHaveLength(2);
 });

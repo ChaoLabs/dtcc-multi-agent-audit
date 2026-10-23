@@ -1,11 +1,23 @@
 import { test, expect } from "@playwright/test";
 import Ajv from "ajv";
-import { handleReview, createLimiter } from "../src/server/bedrock";
+import {
+  handleReview,
+  createLimiter,
+  type ReviewTiming,
+} from "../src/server/bedrock";
 import { BEDROCK, BEDROCK_MODELS } from "../src/lib/bedrock-config";
 
 const key = "bedrock-api-key-SYNTHETIC_SERVER_TEST";
 const source = "pragma solidity ^0.8.20;\ncontract Vault {}";
 const origin = "https://audit.example";
+const fastTiming: ReviewTiming = {
+  modelTimeoutMs: 180_000,
+  overallTimeoutMs: 210_000,
+  retryBaseMs: 0,
+  retryCapMs: 5_000,
+  minimumAttemptBudgetMs: 0,
+  random: () => 0,
+};
 const modelIds = [
   "us.openai.gpt-6.1-sol",
   "us.anthropic.claude-opus-5-5",
@@ -115,7 +127,7 @@ test("three independent requests use fixed Bedrock endpoints and never transmit 
   expect(result.headers.get("vercel-cdn-cache-control")).toBe("no-store");
   expect(result.headers.get("set-cookie")).toBeNull();
   const body = await result.json();
-  expect(body.schema_version).toBe("2.0.0");
+  expect(body.schema_version).toBe("2.1.0");
   expect(body.engine).toBe("evidence-consensus");
   expect(body.status).toBe("completed");
   expect(
@@ -269,6 +281,7 @@ for (const [name, changes, headers, status] of [
   ["key with newline", { api_key: key + "\nsecret" }, {}, 400],
   ["arbitrary endpoint", { endpoint: "https://untrusted.example" }, {}, 400],
   ["untrusted candidates", { candidates: [] }, {}, 400],
+  ["unknown prompt variant", { prompt_variant: "user-prompt" }, {}, 400],
   ["client-selected model", { model_id: modelIds[0] }, {}, 400],
   ["bad filename", { filename: "../Vault.sol" }, {}, 400],
   ["empty source", { source: "" }, {}, 400],
@@ -296,8 +309,8 @@ for (const [name, changes, headers, status] of [
   });
 }
 
-for (const status of [401, 403, 429, 400, 404, 500]) {
-  test(`AWS ${status} is a sanitized per-model failure without retries or a false completed report`, async () => {
+for (const status of [401, 403, 429, 400, 404, 408, 424, 500, 502, 503, 504]) {
+  test(`AWS ${status} is sanitized and retried only under the bounded transient policy`, async () => {
     let calls = 0;
     const result = await handleReview(
       request(),
@@ -306,8 +319,10 @@ for (const status of [401, 403, 429, 400, 404, 500]) {
         return new Response(`${key} PRIVATE_AWS_RESPONSE`, { status });
       },
       createLimiter(),
+      fastTiming,
     );
-    expect(calls).toBe(3);
+    const transient = [429, 500, 502, 503, 504].includes(status);
+    expect(calls).toBe(transient ? 6 : 3);
     expect(result.status).toBe(200);
     expect(result.headers.get("cache-control")).toContain("no-store");
     const body = await result.json();
@@ -316,6 +331,7 @@ for (const status of [401, 403, 429, 400, 404, 500]) {
     for (const model of body.models) {
       expect(model.status).toBe("failed");
       expect(model.review).toBeNull();
+      expect(model.attempts).toHaveLength(transient ? 2 : 1);
       expect(model.error.code).toEqual(expect.any(String));
       expect(model.error.detail).toEqual(expect.any(String));
     }
@@ -907,4 +923,320 @@ test("request guard caps repeated runs without retaining raw credentials", async
   const limiter = createLimiter();
   for (let i = 0; i < 6; i++) limiter(key)();
   expect(() => limiter(key)).toThrow("Analysis is busy");
+});
+
+test("a transient failure retries only its model and preserves both successful reviews", async () => {
+  const calls = new Map<string, number>();
+  const result = await handleReview(
+    request(),
+    async (url) => {
+      const id = modelIds.find((id) => String(url).includes(id))!;
+      const count = (calls.get(id) ?? 0) + 1;
+      calls.set(id, count);
+      if (id === modelIds[1] && count === 1)
+        return new Response("PRIVATE_THROTTLE", { status: 429 });
+      return Response.json(
+        payload({ summary: "Candidate", findings: [finding] }),
+      );
+    },
+    createLimiter(),
+    fastTiming,
+  );
+  const body = await result.json();
+  expect(result.status).toBe(200);
+  expect(body.status).toBe("completed");
+  expect(modelIds.map((id) => calls.get(id))).toEqual([1, 2, 1]);
+  expect(body.execution.total_attempts).toBe(4);
+  expect(
+    body.models[1].attempts.map(
+      (attempt: { status: string }) => attempt.status,
+    ),
+  ).toEqual(["failed", "succeeded"]);
+  expect(body.models[1].attempts[0].error_code).toBe("bedrock_rate_limit");
+  expect(body.findings[0].agreement).toBe(3);
+  expect(body.findings[0].supporting_models).toHaveLength(3);
+  expect(JSON.stringify(body)).not.toContain("PRIVATE_THROTTLE");
+});
+
+for (const retryAfter of ["3600", "Fri, 01 Jan 2100 00:00:00 GMT"]) {
+  test(`Retry-After ${retryAfter} exceeding the wait cap does not cause a premature retry`, async () => {
+    let calls = 0;
+    const result = await handleReview(
+      request(),
+      async () => {
+        calls++;
+        return new Response("", {
+          status: 503,
+          headers: { "retry-after": retryAfter },
+        });
+      },
+      createLimiter(),
+      fastTiming,
+    );
+    expect(calls).toBe(3);
+    const body = await result.json();
+    expect(body.status).toBe("failed");
+    expect(body.execution.total_attempts).toBe(3);
+  });
+}
+
+test("a bounded Retry-After is recorded and honored before the second attempt", async () => {
+  const started = performance.now();
+  const starts = new Map<string, number[]>();
+  const result = await handleReview(
+    request(),
+    async (url) => {
+      const id = String(url);
+      const times = starts.get(id) ?? [];
+      times.push(performance.now());
+      starts.set(id, times);
+      return times.length === 1
+        ? new Response("", { status: 429, headers: { "retry-after": "0.03" } })
+        : Response.json(payload());
+    },
+    createLimiter(),
+    fastTiming,
+  );
+  const body = await result.json();
+  expect(body.status).toBe("completed");
+  expect(performance.now() - started).toBeGreaterThanOrEqual(30);
+  for (const times of starts.values())
+    expect(times[1] - times[0]).toBeGreaterThanOrEqual(30);
+  for (const model of body.models)
+    expect(model.attempts[1].retry_delay_ms).toBe(30);
+});
+
+test("model deadline terminates a non-cooperating transport and preserves successful reviews", async () => {
+  let calls = 0;
+  const signals: AbortSignal[] = [];
+  const result = await handleReview(
+    request(),
+    async (url, init) => {
+      calls++;
+      signals.push(init!.signal!);
+      if (String(url).includes(modelIds[1]))
+        return new Promise<Response>(() => {});
+      return Response.json(
+        payload({ summary: "Candidate", findings: [finding] }),
+      );
+    },
+    createLimiter(),
+    { ...fastTiming, modelTimeoutMs: 30, overallTimeoutMs: 100 },
+  );
+  const body = await result.json();
+  expect(result.status).toBe(200);
+  expect(calls).toBe(3);
+  expect(body.status).toBe("partial");
+  expect(body.models[1].error.code).toBe("timeout");
+  expect(body.models[1].attempts).toHaveLength(1);
+  expect(body.findings[0].agreement).toBe(2);
+  expect(signals[1].aborted).toBe(true);
+});
+
+test("overall deadline returns completed reviews instead of discarding the entire report", async () => {
+  const result = await handleReview(
+    request(),
+    async (url) =>
+      String(url).includes(modelIds[2])
+        ? new Promise<Response>(() => {})
+        : Response.json(payload()),
+    createLimiter(),
+    { ...fastTiming, modelTimeoutMs: 30, overallTimeoutMs: 30 },
+  );
+  const body = await result.json();
+  expect(result.status).toBe(200);
+  expect(body.status).toBe("partial");
+  expect(body.models.map((model: { status: string }) => model.status)).toEqual([
+    "succeeded",
+    "succeeded",
+    "failed",
+  ]);
+  expect(body.models[2].error.code).toBe("timeout");
+});
+
+test("model timeout cancels a stalled response body with no automatic retry", async () => {
+  let cancelled = 0;
+  let calls = 0;
+  const result = await handleReview(
+    request(),
+    async () => {
+      calls++;
+      return new Response(
+        new ReadableStream({
+          cancel() {
+            cancelled++;
+          },
+        }),
+      );
+    },
+    createLimiter(),
+    { ...fastTiming, modelTimeoutMs: 30, overallTimeoutMs: 100 },
+  );
+  const body = await result.json();
+  expect(body.status).toBe("failed");
+  expect(calls).toBe(3);
+  expect(cancelled).toBe(3);
+  expect(
+    body.models.every(
+      (model: { error: { code: string } }) => model.error.code === "timeout",
+    ),
+  ).toBe(true);
+});
+
+test("one absolute deadline spans the initial request, backoff and retry", async () => {
+  let calls = 0;
+  const starts: number[] = [];
+  const started = performance.now();
+  const result = await handleReview(
+    request(),
+    async (url) => {
+      calls++;
+      if (!String(url).includes(modelIds[0])) return Response.json(payload());
+      starts.push(performance.now());
+      if (starts.length === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        return new Response("", { status: 503 });
+      }
+      return new Promise<Response>(() => {});
+    },
+    createLimiter(),
+    {
+      ...fastTiming,
+      modelTimeoutMs: 100,
+      overallTimeoutMs: 200,
+      retryBaseMs: 10,
+      minimumAttemptBudgetMs: 5,
+    },
+  );
+  const elapsed = performance.now() - started;
+  const body = await result.json();
+  expect(calls).toBe(4);
+  expect(body.models[0].attempts).toHaveLength(2);
+  expect(body.models[0].attempts[0].error_code).toBe("bedrock_unavailable");
+  expect(body.models[0].error.code).toBe("timeout");
+  expect(body.status).toBe("partial");
+  expect(elapsed).toBeLessThan(180);
+});
+
+test("a retry is skipped when Retry-After cannot fit the remaining model budget", async () => {
+  let calls = 0;
+  const result = await handleReview(
+    request(),
+    async () => {
+      calls++;
+      return new Response("", { status: 503, headers: { "retry-after": "1" } });
+    },
+    createLimiter(),
+    { ...fastTiming, modelTimeoutMs: 30, overallTimeoutMs: 100 },
+  );
+  const body = await result.json();
+  expect(calls).toBe(3);
+  expect(body.execution.total_attempts).toBe(3);
+  expect(
+    body.models.every(
+      (model: { attempts: unknown[] }) => model.attempts.length === 1,
+    ),
+  ).toBe(true);
+});
+
+test("cancellation during retry backoff sends no further AWS requests and releases its slot", async () => {
+  const limiter = createLimiter();
+  const controller = new AbortController();
+  let calls = 0;
+  const running = handleReview(
+    request({}, {}, controller.signal),
+    async () => {
+      calls++;
+      return new Response("", { status: 429, headers: { "retry-after": "1" } });
+    },
+    limiter,
+    fastTiming,
+  );
+  await expect.poll(() => calls).toBe(3);
+  controller.abort();
+  const response = await running;
+  expect(response.status).toBe(504);
+  expect(calls).toBe(3);
+  const next = await handleReview(
+    request(),
+    async () => Response.json(payload()),
+    limiter,
+    fastTiming,
+  );
+  expect((await next.json()).status).toBe("completed");
+});
+
+test("few-shot instructions are shared by all independent models and recorded in provenance", async () => {
+  const instructions: string[] = [];
+  const result = await handleReview(
+    request({ prompt_variant: "few-shot" }),
+    async (_, init) => {
+      const body = JSON.parse(init!.body as string);
+      instructions.push(body.system[0].text);
+      expect(body.messages[0].content[0].text).not.toContain(
+        "static_candidates",
+      );
+      return Response.json(payload());
+    },
+    createLimiter(),
+    fastTiming,
+  );
+  const body = await result.json();
+  expect(body.execution.prompt_variant).toBe("few-shot");
+  expect(body.execution.prompt_version).toBe("independent-review-v2");
+  expect(new Set(instructions).size).toBe(1);
+  expect(instructions[0]).toMatch(/example/i);
+  expect(body.execution.total_attempts).toBe(3);
+});
+
+test("per-instance admission limits simultaneous users and releases capacity", async () => {
+  const limiter = createLimiter();
+  const releases = Array.from({ length: 4 }, (_, i) => limiter(`${key}_${i}`));
+  expect(() => limiter(`${key}_FIFTH`)).toThrow("Analysis is busy");
+  releases[0]();
+  const release = limiter(`${key}_FIFTH`);
+  release();
+  releases.slice(1).forEach((release) => release());
+});
+
+test("retry admission respects the overall budget already consumed by receiving the request", async () => {
+  const bytes = new TextEncoder().encode(
+    JSON.stringify({ filename: "Vault.sol", source, api_key: key }),
+  );
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      setTimeout(() => {
+        controller.enqueue(bytes);
+        controller.close();
+      }, 40);
+    },
+  });
+  const init: RequestInit & { duplex: "half" } = {
+    method: "POST",
+    headers: { origin, "content-type": "application/json" },
+    body,
+    duplex: "half",
+  };
+  let calls = 0;
+  const result = await handleReview(
+    new Request(`${origin}/api/reviews`, init),
+    async () => {
+      calls++;
+      return new Response("", {
+        status: 503,
+        headers: { "retry-after": "0.08" },
+      });
+    },
+    createLimiter(),
+    { ...fastTiming, modelTimeoutMs: 100, overallTimeoutMs: 100 },
+  );
+  const report = await result.json();
+  expect(calls).toBe(3);
+  expect(report.status).toBe("failed");
+  expect(
+    report.models.every(
+      (model: { error: { code: string } }) =>
+        model.error.code === "bedrock_unavailable",
+    ),
+  ).toBe(true);
 });

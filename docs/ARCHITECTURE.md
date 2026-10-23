@@ -6,11 +6,11 @@ The Next.js application provides two independent analysis paths. Static analysis
 
 The server dispatches three concurrent Converse requests to GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7 through fixed US inference profiles in `us-east-1`. All receive the same review task, numbered source lines, full report-format contract and a provider-native JSON Schema output configuration. GPT additionally requires its documented strict-format flag. They receive no static candidates, peer findings or credentials in their prompts. No tool execution, source compilation or external retrieval is available to the models.
 
-Each response is validated before entering the application orchestrator. The orchestrator groups compatible findings by canonical weakness and evidence location, counts distinct supporting models and preserves membership in the original reviews. It performs no additional inference. This is application-managed orchestration, not an Amazon Bedrock managed Agents deployment. See [the algorithm and reporting semantics](ORCHESTRATION.md).
+Each response is validated before entering the application orchestrator. The orchestrator groups compatible findings by canonical weakness and evidence location, counts distinct supporting models and preserves membership in the original reviews. It supervises bounded attempts and deadlines, records prompt provenance and identifies findings needing comparison. It performs no additional adjudicating inference. This is application-managed orchestration, not an Amazon Bedrock managed Agents deployment. See [the algorithm and reporting semantics](ORCHESTRATION.md).
 
 ## Evidence and report contracts
 
-The original static report schema remains separate from the version **2.0.0** multi-model response/export. Static candidate IDs bind source, engine version, rule and location. Browser validation checks source hash, report provenance and exact source excerpts.
+The original static report schema remains separate from the version **2.1.0** multi-model response/export. The browser also accepts historical **2.0.0** reports, which have no execution-policy record. Static candidate IDs bind source, engine version, rule and location. Browser validation checks source hash, report provenance and exact source excerpts.
 
 A multi-model run records all three model identities, success/failure outcomes, accepted original reviews, available token usage and elapsed times. The consensus report retains its member references, model support, agreement level and severity disagreement. JSON and Markdown exports preserve this information. Raw AWS payloads and hidden reasoning blocks are not exported as findings.
 
@@ -32,12 +32,20 @@ Changing source, filename or reference case invalidates results and aborts the b
 | --- | --- |
 | Solidity input | 48,000 UTF-8 bytes; 1,200 lines; 2,000 characters per line |
 | Incoming request | 128,000 bytes; 10-second body-read deadline |
-| Model calls | Three parallel calls; no automatic retries or fallback models |
-| Model output | 8,192 tokens and 256,000 response bytes per model |
+| Model calls | Three parallel model tasks; at most two attempts each, six calls per analysis; no replacement models |
+| Model output | 8,192 tokens and 256,000 response bytes per attempt |
 | Deadlines | 180 seconds per model; 210 seconds overall server request |
 | Next.js function | 240 seconds; Vercel Fluid compute |
 
-The per-instance guard permits one active analysis and six attempts per minute per key hash, with four active analyses overall and at most 1,000 retained hashes. Each analysis can issue three model calls, so four active analyses can represent twelve upstream requests. Inactive expired entries are discarded. These guards are not distributed user quotas and do not authenticate a visitor.
+The per-instance guard permits one active analysis and six analysis runs per minute per key hash, with four active analyses overall and at most 1,000 retained hashes. Each analysis can have three upstream requests active at once, so four active analyses can represent twelve simultaneous upstream requests. Retries are sequential within each model task; the worst-case total is six calls per analysis. Inactive expired entries are discarded. These guards are not distributed user quotas and do not authenticate a visitor.
+
+A model may retry once after HTTP 429, 500, 502, 503 or 504, with bounded backoff and an unchanged absolute deadline. Invalid credentials, access denial, unsupported model requests, malformed output and invalid evidence are terminal. Network ambiguity and local timeout do not trigger automatic retries. A browser cancellation stops new attempts, but cannot guarantee cancellation of work already accepted by AWS.
+
+## Controlled evaluation
+
+The prompt variant is selected before execution and applies identically to all three models. Standard instructions provide the baseline; guided examples add fixed synthetic examples that are separate from the five reference contracts. Prompt version and execution policy are retained with the report. No static findings or expected fixture labels are added to the model input.
+
+The five-case validation workflow runs one contract analysis at a time using the current tab key. It can issue at most 30 provider requests for one prompt variant. Cancellation prevents subsequent cases and preserves already completed records. The run captures completion, latency, retries, available usage and disagreement; these are operational measures, not detection accuracy. See [the evaluation protocol](EVALUATION.md).
 
 ## Credentials and hosting
 

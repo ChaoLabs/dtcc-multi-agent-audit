@@ -2,6 +2,13 @@
 import { createHash } from "node:crypto";
 import Ajv from "ajv";
 import { BEDROCK, BEDROCK_MODELS, validateApiKey } from "@/lib/bedrock-config";
+import {
+  POLICY_VERSION,
+  PROMPT_VERSION,
+  REVIEW_POLICY,
+  promptInstructions,
+  type PromptVariant,
+} from "@/lib/review-policy";
 import { sourceLines, validateInput } from "@/lib/static-analysis";
 import { validateModelReview } from "@/lib/report";
 import {
@@ -48,6 +55,8 @@ class RequestError extends Error {
     readonly detail: string,
     readonly status = 502,
     readonly code = "review_failed",
+    readonly retryable = false,
+    readonly retryAfterMs: number | null = null,
   ) {
     super(detail);
   }
@@ -88,6 +97,99 @@ export function createLimiter() {
   };
 }
 const acquire = createLimiter();
+
+// Test injection is module-only. HTTP requests cannot alter these resource limits.
+export type ReviewTiming = {
+  modelTimeoutMs: number;
+  overallTimeoutMs: number;
+  retryBaseMs: number;
+  retryCapMs: number;
+  minimumAttemptBudgetMs: number;
+  random: () => number;
+};
+const defaultTiming: ReviewTiming = {
+  modelTimeoutMs: REVIEW_POLICY.model_timeout_ms,
+  overallTimeoutMs: REVIEW_POLICY.overall_timeout_ms,
+  retryBaseMs: 500,
+  retryCapMs: 5_000,
+  minimumAttemptBudgetMs: 1_000,
+  random: Math.random,
+};
+const retryableStatuses = new Set([429, 500, 502, 503, 504]);
+
+function timeoutError() {
+  return new RequestError(
+    "Analysis timed out or was cancelled. Static results remain available.",
+    504,
+    "timeout",
+  );
+}
+
+function retryAfter(response: Response): number | null {
+  const value = response.headers.get("retry-after")?.trim();
+  if (!value) return null;
+  // Honor the provider's minimum delay; a long delay is rejected by the budget,
+  // never shortened. Invalid headers fall back to the local jitter policy.
+  if (/^\d+(?:\.\d+)?$/.test(value)) {
+    const milliseconds = Number(value) * 1000;
+    return Number.isFinite(milliseconds) ? Math.ceil(milliseconds) : Infinity;
+  }
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
+}
+
+function pause(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(timeoutError());
+  return new Promise((resolve, reject) => {
+    const until = performance.now() + milliseconds;
+    const finish = () => {
+      const remaining = until - performance.now();
+      if (remaining > 0) {
+        timer = setTimeout(finish, Math.ceil(remaining));
+        return;
+      }
+      signal.removeEventListener("abort", abort);
+      resolve();
+    };
+    let timer = setTimeout(finish, milliseconds);
+    const abort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      reject(timeoutError());
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+  });
+}
+
+async function fetchBounded(
+  transport: typeof fetch,
+  url: string,
+  init: RequestInit & { signal: AbortSignal },
+) {
+  const { signal } = init;
+  if (signal.aborted) throw timeoutError();
+  let rejectAbort: (reason: unknown) => void = () => {};
+  const interrupted = new Promise<never>((_, reject) => {
+    rejectAbort = reject;
+  });
+  const abort = () => rejectAbort(timeoutError());
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    if (signal.aborted) throw timeoutError();
+    const pending = transport(url, init).then((response) => {
+      // Defensive cleanup even if a custom transport settles after cancellation.
+      if (signal.aborted) {
+        void response.body?.cancel().catch(() => {});
+        throw timeoutError();
+      }
+      return response;
+    });
+    return await Promise.race([pending, interrupted]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
 async function runModelReview(
   model: (typeof BEDROCK_MODELS)[number],
   key: string,
@@ -95,10 +197,12 @@ async function runModelReview(
   sourceHash: string,
   signal: AbortSignal,
   transport: typeof fetch,
+  promptVariant: PromptVariant,
 ) {
   const started = performance.now();
 
-  const response = await transport(
+  const response = await fetchBounded(
+    transport,
     `https://bedrock-runtime.${BEDROCK.region}.amazonaws.com/model/${model.id}/converse`,
     {
       method: "POST",
@@ -109,7 +213,7 @@ async function runModelReview(
       body: JSON.stringify({
         system: [
           {
-            text: `${SYSTEM}\n\n${reviewFormatInstructions}`,
+            text: `${SYSTEM}\n\n${reviewFormatInstructions}\n\n${promptInstructions(promptVariant)}`,
           },
         ],
         messages: [
@@ -127,7 +231,7 @@ async function runModelReview(
             ],
           },
         ],
-        inferenceConfig: { maxTokens: 8192 },
+        inferenceConfig: { maxTokens: REVIEW_POLICY.max_output_tokens },
         outputConfig: bedrockOutputConfig,
         // GPT's Converse JSON Schema support requires this provider-specific flag.
         ...(model.id === "us.openai.gpt-6.1-sol"
@@ -159,6 +263,8 @@ async function runModelReview(
         "Bedrock is rate limited. Wait before trying again.",
         429,
         "bedrock_rate_limit",
+        true,
+        retryAfter(response),
       );
 
     if (response.status === 400 || response.status === 404)
@@ -170,6 +276,10 @@ async function runModelReview(
 
     throw new RequestError(
       "Bedrock is temporarily unavailable. Try again later.",
+      502,
+      "bedrock_unavailable",
+      retryableStatuses.has(response.status),
+      retryAfter(response),
     );
   }
 
@@ -374,11 +484,13 @@ export async function handleReview(
   request: Request,
   transport: typeof fetch = fetch,
   limiter = acquire,
+  timing: ReviewTiming = defaultTiming,
 ) {
   let release: (() => void) | undefined;
+  const overallDeadline = performance.now() + timing.overallTimeoutMs;
   const signal = AbortSignal.any([
     request.signal,
-    AbortSignal.timeout(210_000),
+    AbortSignal.timeout(timing.overallTimeoutMs),
   ]);
   try {
     // The browser sends no cookies; this route accepts only same-origin JSON POSTs.
@@ -426,7 +538,13 @@ export async function handleReview(
     }
     if (
       !object(input) ||
-      Object.keys(input).sort().join(",") !== "api_key,filename,source" ||
+      Object.keys(input).some(
+        (name) =>
+          !["api_key", "filename", "source", "prompt_variant"].includes(name),
+      ) ||
+      (input.prompt_variant !== undefined &&
+        input.prompt_variant !== "baseline" &&
+        input.prompt_variant !== "few-shot") ||
       typeof input.filename !== "string" ||
       typeof input.source !== "string" ||
       typeof input.api_key !== "string"
@@ -437,6 +555,8 @@ export async function handleReview(
         "invalid_body",
       );
     const { filename, source } = input;
+    const promptVariant: PromptVariant =
+      input.prompt_variant === "few-shot" ? "few-shot" : "baseline";
     let key: string;
     try {
       key = validateApiKey(input.api_key);
@@ -459,67 +579,144 @@ export async function handleReview(
     release = limiter(key);
     const started = performance.now();
     const sourceHash = createHash("sha256").update(source).digest("hex");
-    // Independent model reviews are concurrent. A failed model is explicit evidence of
-    // incomplete coverage, never a zero-finding vote. No automatic paid retries.
+    // The supervisor bounds each model across ALL attempts. Completed reviews are
+    // retained; only explicit transient HTTP failures receive one bounded retry.
     const models: ModelRun[] = await Promise.all(
-      BEDROCK_MODELS.map(async (model) => {
+      BEDROCK_MODELS.map(async (model): Promise<ModelRun> => {
         const modelStart = performance.now();
+        const deadline = Math.min(
+          modelStart + timing.modelTimeoutMs,
+          overallDeadline,
+        );
         const modelSignal = AbortSignal.any([
           signal,
-          AbortSignal.timeout(180_000),
+          AbortSignal.timeout(timing.modelTimeoutMs),
         ]);
-        try {
-          const review = await runModelReview(
-            model,
-            key,
-            source,
-            sourceHash,
-            modelSignal,
-            transport,
+        const attempts: NonNullable<ModelRun["attempts"]> = [];
+        const elapsed = () =>
+          Math.max(
+            Math.round(performance.now() - modelStart),
+            attempts.reduce(
+              (total, attempt) =>
+                total + attempt.elapsed_ms + attempt.retry_delay_ms,
+              0,
+            ),
           );
-          return {
-            model_id: model.id,
-            label: model.label,
-            status: "succeeded" as const,
-            elapsed_ms: review.elapsed_ms,
-            review,
-            error: null,
-          };
-        } catch (error) {
-          const safe = modelSignal.aborted
-            ? new RequestError(
-                `${model.label} timed out or was cancelled.`,
-                504,
-                "timeout",
+        let retryDelay = 0;
+        let failure = timeoutError();
+        try {
+          for (
+            let number = 1;
+            number <= REVIEW_POLICY.max_attempts_per_model;
+            number++
+          ) {
+            if (modelSignal.aborted) throw timeoutError();
+            const attemptStart = performance.now();
+            try {
+              const review = await runModelReview(
+                model,
+                key,
+                source,
+                sourceHash,
+                modelSignal,
+                transport,
+                promptVariant,
+              );
+              if (modelSignal.aborted) throw timeoutError();
+              attempts.push({
+                attempt: number,
+                status: "succeeded",
+                elapsed_ms: Math.max(
+                  Math.round(performance.now() - attemptStart),
+                  review.elapsed_ms,
+                ),
+                error_code: null,
+                retry_delay_ms: retryDelay,
+              });
+              return {
+                model_id: model.id,
+                label: model.label,
+                status: "succeeded",
+                elapsed_ms: elapsed(),
+                attempts,
+                review,
+                error: null,
+              };
+            } catch (error) {
+              failure = modelSignal.aborted
+                ? timeoutError()
+                : error instanceof RequestError
+                  ? error
+                  : new RequestError(
+                      `${model.label} could not complete its review.`,
+                      502,
+                      "review_failed",
+                    );
+              attempts.push({
+                attempt: number,
+                status: "failed",
+                elapsed_ms: Math.round(performance.now() - attemptStart),
+                error_code: failure.code,
+                retry_delay_ms: retryDelay,
+              });
+              if (
+                modelSignal.aborted ||
+                !failure.retryable ||
+                number === REVIEW_POLICY.max_attempts_per_model
               )
-            : error instanceof RequestError
-              ? error
-              : new RequestError(
-                  `${model.label} could not complete its review.`,
-                  502,
-                  "review_failed",
-                );
-          return {
-            model_id: model.id,
-            label: model.label,
-            status: "failed" as const,
-            elapsed_ms: Math.round(performance.now() - modelStart),
-            review: null,
-            error: { code: safe.code, detail: safe.detail },
-          };
+                break;
+              const jitter = Math.ceil(
+                timing.retryBaseMs *
+                  (1 + Math.max(0, Math.min(1, timing.random()))),
+              );
+              retryDelay = Math.max(jitter, failure.retryAfterMs ?? 0);
+              if (
+                retryDelay > timing.retryCapMs ||
+                retryDelay + timing.minimumAttemptBudgetMs >=
+                  deadline - performance.now()
+              )
+                break;
+              await pause(retryDelay, modelSignal);
+            }
+          }
+        } catch {
+          // Backoff cancellation consumes no new AWS request and keeps the prior
+          // transient failure in the attempt history for diagnosis.
+          failure = timeoutError();
         }
+        return {
+          model_id: model.id,
+          label: model.label,
+          status: "failed",
+          elapsed_ms: elapsed(),
+          attempts,
+          review: null,
+          error: { code: failure.code, detail: failure.detail },
+        };
       }),
     );
-    if (signal.aborted)
-      throw new RequestError(
-        "Analysis timed out or was cancelled. Static results remain available.",
-        504,
-        "timeout",
-      );
+    // A user cancellation stops the request. An internal deadline still returns
+    // completed reviews, with timed-out model outcomes explicit in the report.
+    if (request.signal.aborted) throw timeoutError();
     const council = await buildCouncilReport(
       models,
       source,
-      Math.round(performance.now() - started),
+      Math.max(
+        Math.round(performance.now() - started),
+        ...models.map((model) => model.elapsed_ms),
+      ),
+      {
+        policy_version: POLICY_VERSION,
+        prompt_variant: promptVariant,
+        prompt_version: PROMPT_VERSION,
+        max_attempts_per_model: REVIEW_POLICY.max_attempts_per_model,
+        model_timeout_ms: timing.modelTimeoutMs,
+        overall_timeout_ms: timing.overallTimeoutMs,
+        total_attempts: models.reduce(
+          (total, model) => total + (model.attempts?.length ?? 0),
+          0,
+        ),
+      },
     );
     return Response.json(council, { headers });
   } catch (error) {
