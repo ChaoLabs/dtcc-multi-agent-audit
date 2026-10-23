@@ -63,6 +63,7 @@ export default function GuidePage() {
           <a href="#static">Static analysis</a>
           <a href="#bedrock">Connect Bedrock</a>
           <a href="#reports">Read the report</a>
+          <a href="#evaluation">Validate five cases</a>
           <a href="#local">Run locally</a>
         </nav>
         <section id="static" className="guide-section">
@@ -143,9 +144,11 @@ export default function GuidePage() {
               If a key expires, generate and enter a fresh one. If one model is
               denied access, ask your AWS administrator to check its permissions
               and first-use requirements. A partial run retains successful
-              reviews and identifies failed models. No calls are retried
-              automatically. Cancelling may not stop AWS work already in
-              progress.
+              reviews and identifies failed models. Each model can retry one
+              eligible temporary service failure within its original 180-second
+              deadline. The server run is limited to 210 seconds and six
+              provider requests. Invalid access or invalid evidence is not
+              retried. Cancelling may not stop AWS work already in progress.
             </p>
           </div>
         </section>
@@ -169,7 +172,8 @@ export default function GuidePage() {
               severity is displayed, with disagreements retained for inspection.
               Static results stay separate and do not count as a model vote.
               Download JSON or Markdown to preserve model outcomes, original
-              reviews, consolidated findings and source provenance.
+              reviews, consolidated findings, prompt settings, attempt history
+              and source provenance.
             </p>
             <p>
               Pattern matches and model findings are review candidates. Matching
@@ -191,8 +195,37 @@ export default function GuidePage() {
             </a>
           </div>
         </section>
-        <section id="local" className="guide-section">
+        <section id="evaluation" className="guide-section">
           <span className="guide-number">04</span>
+          <div>
+            <h2>Compare prompts on the same five cases</h2>
+            <p>
+              Choose <strong>Standard</strong> or{" "}
+              <strong>Guided examples</strong> before API analysis. Both use the
+              same models and output rules. Guided examples add separate
+              synthetic examples of grounded findings and benign lookalikes;
+              they do not include answers from the reference contracts or
+              another model&apos;s review.
+            </p>
+            <p>
+              Open <strong>Validate 5 cases</strong> to run the five existing
+              contracts one at a time. One prompt variant can make at most 30
+              provider requests, including retries. Start the other variant
+              separately when ready. Cancel to stop subsequent cases; completed
+              records remain available for export.
+            </p>
+            <p>
+              Download the evaluation JSON to compare completion, attempts,
+              latency, available token usage and differences between findings.
+              Returned token counters may omit failed-attempt usage. These are
+              operational measures; detection accuracy needs human-reviewed
+              claims. Agreement or successful execution alone does not establish
+              an improvement from guided examples.
+            </p>
+          </div>
+        </section>
+        <section id="local" className="guide-section">
+          <span className="guide-number">05</span>
           <div>
             <h2>Run the workspace on your computer</h2>
             <p>

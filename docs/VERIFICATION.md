@@ -1,5 +1,25 @@
 # Verification records
 
+## Bounded orchestration and controlled evaluation
+
+Date: 2026-10-23. Reviewed base: `0f26c3af418871e6baaa1beca02583f23cb3b201` (main after PR #18). No live Bedrock calls were made for these checks.
+
+| Check | Result |
+| --- | --- |
+| Python unit/API/artifact suite | **102 passed** |
+| TypeScript transport, orchestration and evaluation tests | **160 passed**: 81 transport, 61 orchestration, 18 evaluation |
+| Desktop/mobile workspace and static parity checks | **60 passed**: 52 browser workflows and 8 static checks |
+| Final production-build regression | **10 passed**: 8 targeted UI repeats after responsive fixes, plus 2 compiled API-route checks |
+| ESLint, TypeScript, Prettier and Ruff | Passed |
+| Generated schema/types and five-case drift | Passed; reference source files unchanged |
+| Next.js production build | Passed; compiled `/api/reviews`, workspace and guide |
+| Updated platform PDF | Seven pages visually inspected; deterministic regeneration, bookmarks and links verified |
+| Self-contained patch installer | Read-only preflight, conflict refusal before writes, exact applied bytes/modes, preservation of unrelated files and idempotent reapplication passed |
+
+Mocked provider tests cover the six-request ceiling, selective transient retries, Retry-After, absolute deadlines including backoff, cancellation, partial-result retention, rejection of malformed or ungrounded evidence, strict attempt accounting and prompt provenance. The evaluation suite checks exactly five sequential cases, no outer retries, cancellation retaining completed reports, access/rate-limit early stops, unknown token usage and rejection of legacy/mismatched experiment metadata. UI tests cover guided prompts, the five-case workflow, cancellation, exports, attempt history and disagreement review.
+
+The test browser is Chromium 153; the mobile configuration emulates a viewport and is not a native Safari test. Existing Starlette/httpx and AnyIO deprecation warnings remain in the Python environment. These checks establish local application behavior, not live DTCC account access, service availability, exploitability, calibrated confidence or an improvement in model accuracy. Live baseline/guided comparisons and human review remain required before quality claims.
+
 ## Original M0 initialization
 
 Date: 2026-09-17 UTC. Scope: initialization patch, release 0.1.0. These are measured local checks, not a production security certification.

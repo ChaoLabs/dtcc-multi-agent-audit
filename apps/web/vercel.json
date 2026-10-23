@@ -4,5 +4,10 @@
   "buildCommand": "npm run build",
   "installCommand": "npm ci",
   "outputDirectory": null,
-  "fluid": true
+  "fluid": true,
+  "functions": {
+    "src/app/api/reviews/route.ts": {
+      "supportsCancellation": true
+    }
+  }
 }

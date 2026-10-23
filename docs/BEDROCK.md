@@ -1,6 +1,6 @@
 # Bedrock API analysis
 
-The website runs **GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7** independently and in parallel through Amazon Bedrock. A deterministic application orchestrator consolidates accepted findings and preserves each model's original review. There is no fourth paid model call. [Orchestration details](ORCHESTRATION.md) explain matching, votes and incomplete results.
+The website runs **GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7** independently and in parallel through Amazon Bedrock. A deterministic application orchestrator consolidates accepted findings and preserves each model's original review. There is no additional adjudicating model; bounded retries use the same three model identities. [Orchestration details](ORCHESTRATION.md) explain matching, votes and incomplete results.
 
 ## Generate a fresh key through DevX
 
@@ -29,7 +29,7 @@ Claude Opus 5.5 has adaptive thinking always enabled. The request leaves optiona
 
 All three models use Converse `outputConfig.textFormat` with the same JSON Schema derived from the report contract, and receive the full formatting contract in their system instructions. GPT-6.1 Sol additionally receives `additionalModelRequestFields.text.format.strict: true`, as required by its Converse interface. The provider receives supported structural constraints; the application retains the stricter length, finding-count, line-range and exact-source checks. See the model cards linked below and [Bedrock structured-output API and schema limits](https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html).
 
-Models supply evidence as `line_start`, `line_end` and `excerpt`. The server checks the integer range, span length, exact source excerpt and duplicate findings before adding `validation: "source-bound"`. A legacy model-supplied `validation` annotation is ignored; it cannot establish or bypass source binding. No source text, line number or substantive finding is repaired to force acceptance. The browser/export contract remains unchanged.
+Models supply evidence as `line_start`, `line_end` and `excerpt`. The server checks the integer range, span length, exact source excerpt and duplicate findings before adding `validation: "source-bound"`. A legacy model-supplied `validation` annotation is ignored; it cannot establish or bypass source binding. No source text, line number or substantive finding is repaired to force acceptance. The substantive evidence contract remains unchanged; execution provenance is recorded separately.
 
 AWS may take additional time to compile a new output schema on its first use. The model deadline still applies; an expired request remains an explicit failure and is not automatically retried.
 
@@ -59,12 +59,16 @@ Running API analysis sends the contract through this site's server to AWS. The A
 | --- | --- |
 | Source | 48,000 UTF-8 bytes / 1,200 lines / 2,000 characters per line |
 | Request body | 128,000 bytes; 10-second read deadline |
-| Model calls | Three in parallel; no automatic retries or fallback models |
-| Output per model | 8,192 tokens / 256,000 response bytes |
+| Model calls | Three parallel model tasks; at most two attempts each, six calls per analysis; no fallback models |
+| Output per attempt | 8,192 tokens / 256,000 response bytes |
 | Deadline | 180 seconds per model; 210 seconds overall server request |
 | Function duration | 240 seconds, with Vercel Fluid compute enabled |
 
-Per-instance guards allow one simultaneous analysis and six attempts per minute per key hash, with four active analyses total. These are resource bounds, not a distributed quota. Invalid JSON, truncated output or invented source evidence fails the affected model review. API response/export schema **2.0.0** retains model outcomes, accepted original reviews, consensus membership and agreement/severity metadata.
+Per-instance guards allow one simultaneous analysis and six analysis runs per minute per key hash, with four active analyses total. These are resource bounds, not a distributed quota. Invalid JSON, truncated output or invented source evidence fails the affected model review. New API response/export schema **2.1.0** retains model outcomes, accepted original reviews, consensus membership, agreement/severity metadata, prompt provenance and attempt history. Historical **2.0.0** reports remain readable.
+
+The supervisor retries only explicit HTTP 429, 500, 502, 503 and 504 responses, at most once per model. Backoff is bounded and never resets the model or overall deadline. Authentication, permission, invalid request, output-validation, network-ambiguity and timeout failures do not automatically retry. Accepted reviews are not rerun to fill a missing vote. See [the orchestration policy](ORCHESTRATION.md).
+
+For a controlled comparison, select standard instructions or guided examples before running analysis. The same variant is used by all three models. The five-case validation workflow sends the five existing reference contracts sequentially, at most 30 provider requests per variant, and exports the outcomes. This is an explicitly started API operation billed to the supplied key's account.
 
 ## Troubleshooting
 
@@ -73,7 +77,7 @@ Per-instance guards allow one simultaneous analysis and six attempts per minute 
 | Expired/invalid key | Generate a fresh `us-east-1` key from the active DevX AWS session and replace it in the website. |
 | Access denied for one model | Verify its inference-profile, foundation-model and applicable default-project permissions; complete first-use requirements. |
 | Wrong Region | Generate the key in `us-east-1`; changing the browser display does not re-scope a key. |
-| Quota or throttling | Wait or ask the account administrator to review that model's quota. The app does not retry automatically. |
+| Quota or throttling | The supervisor may retry once within the original deadline. If it still fails, wait or ask the administrator to inspect that model's quota. Repeated reruns do not grant capacity. |
 | Timeout | Use a shorter contract or retry manually when appropriate. Preserve successful partial reviews for inspection. |
 | Report format rejected | Open the model status to see the rejected field and constraint. This means returned JSON failed the local schema. The diagnostic excludes raw model values and unknown property names. |
 | Invalid/truncated model output | Treat that model as failed; inspect other outcomes. Do not interpret a parsing failure as a clean contract. |

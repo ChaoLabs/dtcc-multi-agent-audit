@@ -1,20 +1,42 @@
 import { useEffect, useRef } from "react";
 import type { ConsensusFinding, CouncilReport } from "@/lib/orchestration";
 import { BEDROCK_MODELS } from "@/lib/bedrock-config";
+import type { PromptVariant } from "@/lib/review-policy";
 import { Icon } from "./icons";
 
 type Evidence = ConsensusFinding["evidence"];
+
+function failureLabel(code: string | undefined) {
+  if (code === "bedrock_access") return "Access denied";
+  if (code === "timeout") return "Time limit";
+  if (
+    code === "invalid_report" ||
+    code === "invalid_evidence" ||
+    code === "incomplete"
+  )
+    return "Rejected";
+  if (code === "bedrock_rate_limit") return "Rate limited";
+  return "Unavailable";
+}
 
 export function CouncilStatus({
   report,
   busy,
   hasKey,
   onConnect,
+  promptVariant,
+  onPromptChange,
+  onEvaluate,
+  evaluating,
 }: {
   report: CouncilReport | null;
   busy: boolean;
   hasKey: boolean;
   onConnect: () => void;
+  promptVariant: PromptVariant;
+  onPromptChange: (variant: PromptVariant) => void;
+  onEvaluate: () => void;
+  evaluating: boolean;
 }) {
   const council = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -44,6 +66,63 @@ export function CouncilStatus({
         <button className="quiet-button" onClick={onConnect}>
           <Icon name="settings" size={14} />
           {hasKey ? "Connection settings" : "Connect Bedrock"}
+        </button>
+      </div>
+      <div className="council-controls">
+        <label htmlFor="review-prompt">Review prompt</label>
+        <select
+          id="review-prompt"
+          value={promptVariant}
+          disabled={busy || evaluating}
+          onChange={(event) =>
+            onPromptChange(event.target.value as PromptVariant)
+          }
+        >
+          <option value="baseline">Standard</option>
+          <option value="few-shot">Guided examples</option>
+        </select>
+        <details className="execution-limits">
+          <summary>
+            Execution limits <Icon name="chevron" size={12} />
+          </summary>
+          <div>
+            <strong>Bounded orchestration</strong>
+            <p>
+              Up to two attempts per model; only transient service responses are
+              retried. A successful review is never repeated within the run.
+            </p>
+            <dl>
+              <div>
+                <dt>Model deadline</dt>
+                <dd>180 seconds, including retries</dd>
+              </div>
+              <div>
+                <dt>Run deadline</dt>
+                <dd>210 seconds</dd>
+              </div>
+              <div>
+                <dt>Request budget</dt>
+                <dd>6 model calls maximum</dd>
+              </div>
+              <div>
+                <dt>Output budget</dt>
+                <dd>8,192 tokens per attempt</dd>
+              </div>
+            </dl>
+            <p>
+              Authentication, invalid evidence and malformed reports are not
+              retried. Completed reviews remain available when another model
+              fails.
+            </p>
+          </div>
+        </details>
+        <button
+          className="quiet-button validation-trigger"
+          disabled={busy}
+          onClick={onEvaluate}
+        >
+          <Icon name="scan" size={14} />
+          {evaluating ? "View validation" : "Validate 5 cases"}
         </button>
       </div>
       <div className="council-models">
@@ -83,7 +162,7 @@ export function CouncilStatus({
                     : result?.status === "succeeded"
                       ? "Reviewed"
                       : result?.status === "failed"
-                        ? "Unavailable"
+                        ? failureLabel(result.error?.code)
                         : hasKey
                           ? "Not verified"
                           : "No key"}
@@ -115,6 +194,31 @@ export function CouncilStatus({
                       ? "The key is ready. Model access is checked when you run API analysis."
                       : "Connect a Bedrock key, then run API analysis to request this model."}
                   </p>
+                )}
+                {!!result?.attempts?.length && (
+                  <ol
+                    className="attempt-ledger"
+                    aria-label={`${model.label} attempt history`}
+                  >
+                    {result.attempts.map((attempt) => (
+                      <li key={attempt.attempt}>
+                        <span>
+                          Attempt {attempt.attempt} · {attempt.status}
+                        </span>
+                        <span>
+                          {(attempt.elapsed_ms / 1000).toFixed(1)}s
+                          {attempt.retry_delay_ms > 0
+                            ? ` · ${(attempt.retry_delay_ms / 1000).toFixed(1)}s backoff`
+                            : ""}
+                        </span>
+                        {attempt.error_code && (
+                          <span className="attempt-error">
+                            {attempt.error_code}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
                 )}
                 <code>{model.id}</code>
               </div>

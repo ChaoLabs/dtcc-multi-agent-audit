@@ -11,6 +11,8 @@ import {
   type ConsensusFinding,
 } from "@/lib/orchestration";
 import { downloadCouncilReport } from "@/lib/council-export";
+import type { PromptVariant } from "@/lib/review-policy";
+import { EvaluationPanel } from "./evaluation-panel";
 import { analyzeStatic, validateInput } from "@/lib/static-analysis";
 import { BEDROCK_MODELS, validateApiKey } from "@/lib/bedrock-config";
 import { Icon } from "./icons";
@@ -48,6 +50,11 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     "static",
   );
   const [confidence, setConfidence] = useState("ALL");
+  const [promptVariant, setPromptVariant] = useState<PromptVariant>("baseline");
+  const [reviewQueueOnly, setReviewQueueOnly] = useState(false);
+  const [evaluating, setEvaluating] = useState(false);
+  const evaluationRequest = useRef<AbortController | null>(null);
+  const evaluationDialog = useRef<HTMLDialogElement>(null);
   const [mode, setMode] = useState<"static" | "api">("static");
   const [editing, setEditing] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -90,7 +97,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
   }, []);
   useEffect(() => {
     findingsView.current?.scrollTo({ top: 0 });
-  }, [resultView, filter, confidence, query]);
+  }, [resultView, filter, confidence, query, reviewQueueOnly]);
   const validReport =
     report?.input.source === source && report.input.filename === filename
       ? report
@@ -111,10 +118,14 @@ export default function Workspace({ cases }: { cases: Case[] }) {
         ...item,
         kind: "static" as const,
       })) ?? []);
+  const reviewQueue = validCouncil?.review_queue ?? [];
   const active = findings.find((item) => item.id === expanded);
   const shown = findings.filter(
     (item) =>
       (filter === "ALL" || item.proposed_severity === filter) &&
+      (!showConsensus ||
+        !reviewQueueOnly ||
+        reviewQueue.some((entry) => entry.finding_id === item.id)) &&
       (!showConsensus ||
         confidence === "ALL" ||
         item.consensus?.confidence === confidence) &&
@@ -134,6 +145,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     setResultView(next);
     setFilter("ALL");
     setConfidence("ALL");
+    setReviewQueueOnly(false);
     setQuery("");
     setExpanded(
       next === "static"
@@ -233,6 +245,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
   }, [focusTarget, editing]);
 
   function switchMode(next: "static" | "api") {
+    evaluationRequest.current?.abort();
     if (busy) {
       version.current++;
       request.current?.abort();
@@ -242,6 +255,14 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     changeResultView(next === "api" && validCouncil ? "consensus" : "static");
     setError("");
     if (next === "api") apiDialog.current?.showModal();
+  }
+  function changePrompt(next: PromptVariant) {
+    if (busy || evaluating) return;
+    setPromptVariant(next);
+    setCouncil(null);
+    setReviewQueueOnly(false);
+    setElapsed(null);
+    setError("");
   }
   function useKey(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -254,6 +275,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
       setFocusTarget(null);
       setElapsed(null);
       setError("");
+      evaluationRequest.current?.abort();
       apiKey.current = key;
       setHasKey(true);
       setVerified(false);
@@ -267,6 +289,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     }
   }
   function clearKey() {
+    evaluationRequest.current?.abort();
     version.current++;
     request.current?.abort();
     setBusy(false);
@@ -281,6 +304,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     setConfigError("");
   }
   const runAudit = useCallback(async () => {
+    if (evaluating || busy) return;
     if (mode === "api" && !apiKey.current) {
       apiDialog.current?.showModal();
       return;
@@ -294,6 +318,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     if (mode === "api") setVerified(false);
     setResultView(mode === "api" ? "consensus" : "static");
     setConfidence("ALL");
+    setReviewQueueOnly(false);
     setFilter("ALL");
     setQuery("");
     const start = performance.now();
@@ -311,6 +336,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           body: JSON.stringify({
             ...snapshot,
             api_key: apiKey.current,
+            prompt_variant: promptVariant,
           }),
           signal: abort.signal,
           credentials: "omit",
@@ -328,6 +354,14 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           );
         }
         const result = await validateCouncil(value, snapshot.source);
+        if (
+          (promptVariant === "few-shot" && !result.execution) ||
+          (result.execution &&
+            result.execution.prompt_variant !== promptVariant)
+        )
+          throw new Error(
+            "The returned prompt setting does not match this review. Please run analysis again.",
+          );
         if (stamp !== version.current || !mounted.current) return;
         setVerified(result.status === "completed");
         setCouncil(result);
@@ -357,7 +391,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
       clearTimeout(timer);
       if (stamp === version.current && mounted.current) setBusy(false);
     }
-  }, [filename, source, mode, invalidate]);
+  }, [filename, source, mode, invalidate, promptVariant, evaluating, busy]);
 
   function cancel() {
     version.current++;
@@ -431,7 +465,8 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           if (
             (event.metaKey || event.ctrlKey) &&
             event.key === "Enter" &&
-            !busy
+            !busy &&
+            !evaluating
           ) {
             event.preventDefault();
             void runAudit();
@@ -507,6 +542,10 @@ export default function Workspace({ cases }: { cases: Case[] }) {
               busy={busy}
               hasKey={hasKey}
               onConnect={() => apiDialog.current?.showModal()}
+              promptVariant={promptVariant}
+              onPromptChange={changePrompt}
+              onEvaluate={() => evaluationDialog.current?.showModal()}
+              evaluating={evaluating}
             />
           )}
           <div className="workspace-grid">
@@ -617,7 +656,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                 ) : (
                   <button
                     className="run-button"
-                    disabled={!source.trim()}
+                    disabled={!source.trim() || evaluating}
                     onClick={() => void runAudit()}
                   >
                     <Icon
@@ -749,6 +788,15 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                     <option value="MEDIUM">Medium · 2-model agreement</option>
                     <option value="LOW">Low · single model</option>
                   </select>
+                  {!!validCouncil?.review_queue?.length && (
+                    <button
+                      className="review-queue-filter"
+                      aria-pressed={reviewQueueOnly}
+                      onClick={() => setReviewQueueOnly(!reviewQueueOnly)}
+                    >
+                      Review queue <span>{reviewQueue.length}</span>
+                    </button>
+                  )}
                 </div>
               )}
               <div
@@ -773,7 +821,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                       </strong>
                       <span>
                         {mode === "api"
-                          ? "Awaiting model responses and source validation. This can take a few minutes."
+                          ? "At most two attempts per model. Each model has 180 seconds; the full run is limited to 210 seconds."
                           : "Checking the current source snapshot."}
                       </span>
                     </div>
@@ -795,6 +843,22 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                           ? "Partial coverage. Results from unavailable models are not treated as agreement."
                           : "No model returned a valid review. Check the model details above and retry."}
                     </p>
+                    {validCouncil.execution && (
+                      <div className="execution-summary">
+                        <span>
+                          {validCouncil.execution.prompt_variant === "few-shot"
+                            ? "Guided examples"
+                            : "Standard prompt"}
+                        </span>
+                        <span>
+                          {validCouncil.execution.total_attempts} / 6 attempts
+                          used
+                        </span>
+                        <span>
+                          {reviewQueue.length} candidates in review queue
+                        </span>
+                      </div>
+                    )}
                     <span className="consensus-caption">
                       Confidence reflects model agreement, not a probability of
                       exploitability.
@@ -859,6 +923,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                       onClick={() => {
                         setFilter("ALL");
                         setConfidence("ALL");
+                        setReviewQueueOnly(false);
                         setQuery("");
                       }}
                     >
@@ -922,6 +987,16 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                             )}
                           </div>
                         )}
+                        {item.consensus &&
+                          reviewQueue.some(
+                            (entry) => entry.finding_id === item.id,
+                          ) && (
+                            <p className="review-action">
+                              {item.consensus.severity_disagreement
+                                ? "Review priority: compare the proposed severities and assess impact against the cited source."
+                                : "Review priority: inspect each model’s evidence. A missing report or unavailable model does not reject this candidate."}
+                            </p>
+                          )}
                         <p>{item.rationale}</p>
                         <div className="evidence-heading">
                           <span>SOURCE EVIDENCE</span>
@@ -1018,6 +1093,20 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           </div>
         </footer>
       </main>
+      <EvaluationPanel
+        dialogRef={evaluationDialog}
+        requestRef={evaluationRequest}
+        promptVariant={promptVariant}
+        onPromptChange={changePrompt}
+        getApiKey={() => apiKey.current}
+        hasKey={hasKey}
+        analysisBusy={busy}
+        onBusyChange={setEvaluating}
+        onConnect={() => {
+          evaluationDialog.current?.close();
+          apiDialog.current?.showModal();
+        }}
+      />
       <dialog
         ref={reportDialog}
         className="modal report-modal"
@@ -1087,6 +1176,28 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                         {validCouncil.status}
                       </dd>
                     </div>
+                    {validCouncil.execution && (
+                      <>
+                        <div>
+                          <dt>Prompt</dt>
+                          <dd>
+                            {validCouncil.execution.prompt_variant} ·{" "}
+                            {validCouncil.execution.prompt_version}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Execution policy</dt>
+                          <dd>
+                            {validCouncil.execution.policy_version} ·{" "}
+                            {validCouncil.execution.total_attempts} / 6 attempts
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Time limits</dt>
+                          <dd>180 seconds per model · 210 seconds per run</dd>
+                        </div>
+                      </>
+                    )}
                     {validCouncil.models.map((model) => (
                       <div key={model.model_id}>
                         <dt>{model.label}</dt>
@@ -1158,8 +1269,9 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                   The orchestrator validates each response and its cited source,
                   groups related findings, and preserves each model&apos;s
                   reasoning. Confidence reflects how many models agree. Missing
-                  models and severity disagreements remain visible for human
-                  review.
+                  models and severity disagreements remain visible in a review
+                  queue. A bounded controller permits one retry for a transient
+                  service response and stops at the model or run deadline.
                 </p>
               </div>
             </li>
@@ -1299,9 +1411,9 @@ export default function Workspace({ cases }: { cases: Case[] }) {
             )}
           </div>
           <p className="connection-note">
-            A completed run makes three model calls. Access is checked during
-            analysis; usage is billed to the AWS account associated with your
-            key.
+            A run starts three model calls and permits one retry per model for a
+            transient service response, up to six calls. Usage is billed to the
+            AWS account associated with your key.
           </p>
           <div className="connection-footer">
             <a

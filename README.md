@@ -13,9 +13,10 @@ A Solidity security review workspace combining on-device static analysis with th
 - Enter one Bedrock API key to run **GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7** concurrently. Each model reviews the same source independently.
 - Consolidate findings by canonical weakness and source location, with distinct-model votes, proposed severity, disagreement indicators and links to the original findings.
 - Inspect source excerpts, search and filter findings, and export JSON or Markdown with source provenance and model outcomes.
-- Preserve successful reviews when another model fails, and label incomplete coverage explicitly.
+- Preserve successful reviews when another model fails, with bounded transient retries, absolute deadlines and per-attempt outcomes.
+- Compare standard instructions with guided in-context examples, then validate the same five reference contracts sequentially and export a reproducible run record.
 
-The orchestration layer is application code. It does not make a fourth model call or use managed Amazon Bedrock Agents. Agreement describes corroboration among model outputs, not the probability that a vulnerability exists. Evidence matching checks source location, not exploitability. See [limitations](docs/LIMITATIONS.md).
+The orchestration layer is application code. It does not invoke a fourth adjudicating model or use managed Amazon Bedrock Agents. Agreement describes corroboration among model outputs, not the probability that a vulnerability exists. Evidence matching checks source location, not exploitability. See [limitations](docs/LIMITATIONS.md).
 
 ## Run locally
 
@@ -56,7 +57,7 @@ Keys stay in the current tab's memory and active server request. Refresh or **Cl
 | Functions | Fluid compute; 240-second route duration |
 | AWS environment variables | None required; visitors supply their own keys |
 
-The browser never calls a visitor's localhost. Model requests have a 180-second deadline per model and a 210-second overall server deadline. No automatic paid retries are performed. See [deployment](docs/DEPLOYMENT.md).
+The browser never calls a visitor's localhost. Model requests have a 180-second deadline per model and a 210-second overall server deadline. Each model can make at most two attempts within the same deadline; only explicitly retryable upstream failures receive one automatic retry. An analysis makes at most six provider requests. See [deployment](docs/DEPLOYMENT.md).
 
 ## Verification
 
@@ -89,7 +90,7 @@ This extended workflow needs Python **3.12–3.14** as well as Node.js. Stop man
 | `evaluations` | Regression cases and reliability evaluation work |
 | `docs` | Architecture, connection setup, methodology and provenance |
 
-The web multi-model response and export use schema **2.0.0**. The original static and legacy Python contracts remain versioned separately. [Architecture](docs/ARCHITECTURE.md) describes the boundaries. The [evaluation plan](docs/EVALUATION.md) covers the work needed to establish any reliability improvement; no measured accuracy gain is claimed.
+New web multi-model responses and exports use schema **2.1.0**, adding execution policy, prompt provenance and per-attempt outcomes. Existing **2.0.0** reports remain readable. The original static and legacy Python contracts remain versioned separately. [Architecture](docs/ARCHITECTURE.md) describes the boundaries. The [evaluation protocol](docs/EVALUATION.md) keeps the five existing contracts fixed and separates execution reliability from human-reviewed detection quality; no measured accuracy gain is claimed.
 
 ## Project context and documentation
 

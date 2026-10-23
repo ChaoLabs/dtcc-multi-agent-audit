@@ -8,6 +8,7 @@ export default defineConfig({
     "bedrock-server.spec.ts",
     "orchestration.spec.ts",
     "council-export.spec.ts",
+    "evaluation.spec.ts",
   ],
   grepInvert: /production route/,
   workers: 1,

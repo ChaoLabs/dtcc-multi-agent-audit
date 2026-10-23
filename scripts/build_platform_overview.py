@@ -1,4 +1,4 @@
-"""Build the six-page platform brief (authoring dependency: reportlab 4.4.9).
+"""Build the seven-page platform brief (authoring dependency: reportlab 4.4.9).
 
 Run from any directory: python scripts/build_platform_overview.py
 The generated PDF is committed so normal web builds need no PDF dependencies.
@@ -20,7 +20,7 @@ OUT = ROOT / "apps/web/public/docs/DTCC_Platform_Overview.pdf"
 W, H = 900, 600
 M = 44
 WIDTH = W - 2 * M
-PAGES = 6
+PAGES = 7
 GREEN = colors.HexColor("#063E31")
 INK = colors.HexColor("#19382D")
 MUTED = colors.HexColor("#5A6D63")
@@ -303,13 +303,13 @@ header(
     3,
     "Multi-model orchestration",
     "Independent reviews. Explicit orchestration.",
-    "Three Bedrock model calls run in parallel and feed one deterministic reconciliation process.",
+    "Three independent model tasks share bounded execution and one deterministic reconciliation process.",
 )
 source_x, source_w = 239, 422
 box(source_x, 174, source_w, 47, PALE)
 label("SHARED INPUT", source_x + 16, 183, source_w - 32, GREEN)
 text(
-    "Numbered source + common review instructions + output schema",
+    "Numbered source + selected prompt variant + output schema",
     source_x + 16,
     199,
     source_w - 32,
@@ -335,7 +335,7 @@ connector([(W / 2, 327), (W / 2, 342)], arrow=True)
 box(M, 344, WIDTH, 67, GREEN)
 label("DETERMINISTIC ORCHESTRATOR  /  TYPESCRIPT APPLICATION LOGIC", M + 18, 357, WIDTH - 36, MINT)
 text(
-    "Validate evidence. Reconcile compatible findings. Record distinct model support.",
+    "Bound execution. Validate evidence. Reconcile findings. Preserve differences.",
     M + 18,
     378,
     WIDTH - 36,
@@ -347,12 +347,12 @@ text(
 for i, (title, body) in enumerate(
     [
         (
-            "01  Validate",
-            "Check the report structure, stated line ranges and exact source excerpts before accepting a review.",
+            "01  Supervise",
+            "Enforce attempt and time limits. Retry eligible temporary failures once, retaining completed peer reviews.",
         ),
         (
-            "02  Reconcile",
-            "Match compatible weaknesses at identifiable source locations. Keep ambiguous claims separate.",
+            "02  Validate & reconcile",
+            "Accept exact source evidence, then match compatible weaknesses. Keep ambiguous claims separate.",
         ),
         (
             "03  Preserve",
@@ -424,7 +424,7 @@ text(
 )
 label("SEVERITY & DIFFERENCES", rx, 353, col, GREEN)
 text(
-    "The highest proposed severity in a group is displayed, and severity differences remain visible. Its rationale, action and excerpt come from that representative finding; original contributions remain available.",
+    "The highest proposed severity is displayed. Severity differences and incomplete model support identify findings to compare. Missing findings are not explicit rebuttals; original contributions remain available.",
     rx,
     375,
     col,
@@ -506,10 +506,13 @@ label("PROVENANCE & REVIEW RECORD", rx, 176, col, GREEN)
 for i, (title, body) in enumerate(
     [
         ("Source", "Filename and SHA-256 identify the analyzed source snapshot."),
-        ("Run", "Run ID, timestamp, engine version, elapsed time and overall review status."),
+        (
+            "Run",
+            "Timestamp, source identity, prompt variant/version, execution limits and overall review status.",
+        ),
         (
             "Models",
-            "Model identities, success or failure, timings and token usage where available.",
+            "Model identities, attempts, outcomes, timings and available token usage; failed-attempt usage may be unknown.",
         ),
     ]
 ):
@@ -520,7 +523,7 @@ for i, (title, body) in enumerate(
 label("EXPORT FOR FOLLOW-UP", rx, 391, col, GREEN)
 text("JSON", rx, 414, 76, 11, GREEN, True)
 text(
-    "Structured static report, consolidated findings and complete validated per-model reviews.",
+    "Static report, consolidated findings, validated model reviews and execution provenance.",
     rx + 88,
     414,
     col - 88,
@@ -530,7 +533,7 @@ text(
 )
 text("Markdown", rx, 474, 76, 11, GREEN, True)
 text(
-    "Readable findings, model outcomes, contribution details and an independent static baseline.",
+    "Readable findings, attempts, contribution details and an independent static baseline.",
     rx + 88,
     474,
     col - 88,
@@ -549,9 +552,111 @@ text(
 )
 c.showPage()
 
-# 6. Practical browser connection, outcome interpretation and useful destinations.
+# 6. Bounded model execution and an explicit five-case prompt comparison.
 header(
     6,
+    "Execution & evaluation",
+    "Bounded execution. Controlled evaluation.",
+    "Inspect operational reliability on the same five contracts before drawing conclusions about detection quality.",
+)
+card_w = (WIDTH - 32) / 3
+for i, (value, title, detail) in enumerate(
+    [
+        ("2 attempts", "PER MODEL, MAXIMUM", "One initial call plus one eligible transient retry."),
+        (
+            "180 seconds",
+            "PER MODEL, ABSOLUTE",
+            "210 seconds for the server run. Retry time is included.",
+        ),
+        (
+            "30 calls",
+            "PER FIVE-CASE VARIANT, MAXIMUM",
+            "Five sequential analyses; at most six provider calls each.",
+        ),
+    ]
+):
+    x = M + i * (card_w + 16)
+    box(x, 174, card_w, 104, PALE)
+    text(value, x + 15, 188, card_w - 30, 22, GREEN, True, 27)
+    label(title, x + 15, 222, card_w - 30, GREEN)
+    text(detail, x + 15, 244, card_w - 30, 9.5, MUTED, leading=13)
+col = (WIDTH - 30) / 2
+rx = M + col + 30
+label("CONTROLLED PROMPT COMPARISON", M, 299, col, GREEN)
+text("Standard prompt", M, 324, col, 12, GREEN, True, 17)
+text(
+    "Shared review instructions and output schema provide the baseline for all three models.",
+    M,
+    348,
+    col,
+    10.5,
+    MUTED,
+    leading=15,
+)
+text("Guided examples", M, 391, col, 12, GREEN, True, 17)
+text(
+    "Separate synthetic examples illustrate grounded claims and benign lookalikes. No reference-case answers or peer findings are supplied.",
+    M,
+    415,
+    col,
+    10.5,
+    MUTED,
+    leading=15,
+)
+label("FIVE-CASE VALIDATION", rx, 299, col, GREEN)
+for i, (title, body) in enumerate(
+    [
+        (
+            "01  Fix the conditions",
+            "Choose one prompt variant. Keep the five source files and three model identities unchanged.",
+        ),
+        (
+            "02  Run sequentially",
+            "Inspect progress or cancel. Completed case records remain available; no new cases start after cancellation.",
+        ),
+        (
+            "03  Export and compare",
+            "Retain completion, attempts, latency, usage and differences. Start the other variant as a separate run.",
+        ),
+    ]
+):
+    y = 324 + i * 54
+    text(title, rx, y, col, 11, GREEN, True, 15)
+    text(body, rx, y + 18, col, 9.5, MUTED, leading=13)
+box(M, 485, WIDTH, 48, PALE)
+text(
+    "A bounded retry addresses an eligible temporary error; it does not repair permissions or invalid evidence.",
+    M + 14,
+    495,
+    WIDTH - 28,
+    10.5,
+    GREEN,
+    True,
+    15,
+)
+text(
+    "Compare execution outcomes first. Quality claims require human-reviewed findings; model agreement is not accuracy.",
+    M + 14,
+    515,
+    WIDTH - 28,
+    9.5,
+    MUTED,
+    leading=13,
+)
+text(
+    "Cancellation cannot reverse work already accepted by AWS. Returned token totals may omit usage from failed attempts.",
+    M,
+    541,
+    WIDTH,
+    8.5,
+    MUTED,
+    leading=10,
+)
+c.showPage()
+
+# 7. Practical browser connection, outcome interpretation and useful destinations.
+header(
+    7,
     "Connection & use",
     "Connect, review and share from your browser.",
     "Use a valid Amazon Bedrock key with access to the three configured models in US East (N. Virginia).",
