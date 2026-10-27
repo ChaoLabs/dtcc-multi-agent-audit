@@ -14,6 +14,11 @@ import {
   type PromptVariant,
 } from "../src/lib/review-policy";
 import { sha256 } from "../src/lib/static-analysis";
+import {
+  syntheticBaseline,
+  syntheticSecondReview,
+} from "./second-review-fixtures";
+import { buildSecondReviewReport } from "../src/lib/second-review";
 
 const key = "bedrock-api-key-SYNTHETIC_EVALUATION_ONLY";
 async function review(
@@ -409,4 +414,225 @@ test("guided examples do not include evaluation sources, filenames, or expected 
   }
   expect(instructions).not.toMatch(/\bSC-\d{3}\b/);
   expect(instructions).not.toContain("expected_rules");
+});
+
+test("paired evaluation preserves exact independent results and makes only one second review per case", async () => {
+  const calls: string[] = [];
+  const firstReports = new Map<
+    string,
+    Awaited<ReturnType<typeof syntheticBaseline>>
+  >();
+  const result = await runEvaluation({
+    ...options(async (url, init) => {
+      const body = JSON.parse(String(init?.body));
+      calls.push(String(url));
+      if (url === "/api/reviews") {
+        expect(body).not.toHaveProperty("baseline");
+        const first = await syntheticBaseline(body.source, body.prompt_variant);
+        firstReports.set(first.source_sha256, first);
+        return Response.json(first);
+      }
+      expect(body.baseline).toEqual(
+        firstReports.get(body.baseline.source_sha256),
+      );
+      return Response.json(
+        await syntheticSecondReview(body.source, body.baseline),
+      );
+    }),
+    includeSecondReview: true,
+  });
+  expect(calls).toEqual(
+    Array.from({ length: 5 }, () => [
+      "/api/reviews",
+      "/api/reviews/second-round",
+    ]).flat(),
+  );
+  expect(result.review_mode).toBe("paired-second-review");
+  expect(result.metrics.observed_attempts).toBe(15);
+  expect(result.metrics.second_review).toMatchObject({
+    successful_model_reviews: 15,
+    observed_attempts: 15,
+    new_supports: 10,
+    withdrawn_supports: 0,
+    unresolved_candidates: 0,
+  });
+  for (const entry of result.cases) {
+    expect(entry.report).toEqual(firstReports.get(entry.source_sha256));
+    expect(entry.report?.findings[0].agreement).toBe(1);
+    expect(entry.second_review?.findings[0].supporting_models).toHaveLength(3);
+    expect(entry.second_review_status).toBe("completed");
+  }
+  expect(JSON.stringify(result)).not.toContain(key);
+});
+
+test("paired evaluation records withdrawals and uncertainty without treating them as proven corrections", async () => {
+  const result = await runEvaluation({
+    ...options(async (url, init) => {
+      const body = JSON.parse(String(init?.body));
+      return Response.json(
+        url === "/api/reviews"
+          ? await syntheticBaseline(body.source)
+          : await syntheticSecondReview(body.source, body.baseline, [
+              "not_supported",
+              "uncertain",
+              "supported",
+            ]),
+      );
+    }),
+    includeSecondReview: true,
+  });
+  expect(result.metrics.second_review).toMatchObject({
+    new_supports: 5,
+    withdrawn_supports: 5,
+    unresolved_candidates: 5,
+  });
+  expect(
+    result.cases.every(
+      (entry) => entry.report?.findings[0].confidence === "LOW",
+    ),
+  ).toBe(true);
+});
+
+test("paired cases with no queued disagreements skip all second-round network calls", async () => {
+  let calls = 0;
+  const result = await runEvaluation({
+    ...options(async (url, init) => {
+      calls++;
+      expect(url).toBe("/api/reviews");
+      const body = requestInput(init);
+      return Response.json(
+        await syntheticBaseline(body.source, "baseline", true),
+      );
+    }),
+    includeSecondReview: true,
+  });
+  expect(calls).toBe(5);
+  expect(result.metrics.second_review.skipped_cases).toBe(5);
+  expect(result.metrics.second_review.observed_attempts).toBe(0);
+});
+
+test("a failed second review keeps the first pass and does not repeat either request", async () => {
+  let calls = 0;
+  const result = await runEvaluation({
+    ...options(async (url, init) => {
+      calls++;
+      const body = JSON.parse(String(init?.body));
+      if (url === "/api/reviews/second-round")
+        throw new Error(`Synthetic failure ${key}`);
+      return Response.json(await syntheticBaseline(body.source));
+    }),
+    includeSecondReview: true,
+  });
+  expect(calls).toBe(10);
+  expect(result.metrics.completed_cases).toBe(5);
+  expect(result.metrics.second_review.failed_cases).toBe(5);
+  expect(result.metrics.second_review.unresolved_candidates).toBe(5);
+  expect(
+    result.cases.every((entry) => entry.report && !entry.second_review),
+  ).toBe(true);
+  expect(JSON.stringify(result)).not.toContain(key);
+});
+
+for (const status of [401, 403, 429]) {
+  test(`paired HTTP ${status} stops later cases but retains the independent report`, async () => {
+    let calls = 0;
+    const result = await runEvaluation({
+      ...options(async (url, init) => {
+        calls++;
+        const body = JSON.parse(String(init?.body));
+        return url === "/api/reviews"
+          ? Response.json(await syntheticBaseline(body.source))
+          : new Response(key, { status });
+      }),
+      includeSecondReview: true,
+    });
+    expect(calls).toBe(2);
+    expect(result.status).toBe("stopped");
+    expect(result.cases[0].status).toBe("completed");
+    expect(result.cases[0].second_review_status).toBe("failed");
+    expect(result.cases[0].report?.models).toHaveLength(3);
+    expect(
+      result.cases.slice(1).every((entry) => entry.status === "pending"),
+    ).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(key);
+  });
+}
+
+test("cancelling during paired second review retains first pass and starts no later case", async () => {
+  const abort = new AbortController();
+  let calls = 0;
+  const result = await runEvaluation({
+    ...options(async (url, init) => {
+      calls++;
+      const body = JSON.parse(String(init?.body));
+      if (url === "/api/reviews")
+        return Response.json(await syntheticBaseline(body.source));
+      abort.abort();
+      throw new Error("Synthetic interrupted second review");
+    }),
+    includeSecondReview: true,
+    signal: abort.signal,
+  });
+  expect(calls).toBe(2);
+  expect(result.status).toBe("cancelled");
+  expect(result.cases[0].status).toBe("completed");
+  expect(result.cases[0].second_review_status).toBe("cancelled");
+  expect(result.metrics.successful_model_reviews).toBe(3);
+});
+
+test("paired first-round failures skip reassessment instead of leaving phantom pending work", async () => {
+  let calls = 0;
+  const result = await runEvaluation({
+    ...options(async (url) => {
+      expect(url).toBe("/api/reviews");
+      calls++;
+      throw new Error("Synthetic first-pass transport failure");
+    }),
+    includeSecondReview: true,
+  });
+  expect(calls).toBe(5);
+  expect(
+    result.cases.every(
+      (entry) =>
+        entry.status === "failed" && entry.second_review_status === "skipped",
+    ),
+  ).toBe(true);
+  expect(result.metrics.second_review.observed_attempts).toBe(0);
+});
+
+test("access failure inside a partial second review retains all accepted records and stops the batch", async () => {
+  let calls = 0;
+  const result = await runEvaluation({
+    ...options(async (url, init) => {
+      calls++;
+      const body = JSON.parse(String(init?.body));
+      if (url === "/api/reviews")
+        return Response.json(await syntheticBaseline(body.source));
+      const second = await syntheticSecondReview(body.source, body.baseline);
+      const failed = second.models[2];
+      failed.review = null;
+      failed.status = "failed";
+      failed.error = {
+        code: "bedrock_access",
+        detail: "Synthetic access failure",
+      };
+      failed.attempts[0].status = "failed";
+      failed.attempts[0].error_code = "bedrock_access";
+      return Response.json(
+        await buildSecondReviewReport(
+          second.models,
+          body.source,
+          body.baseline,
+          3,
+        ),
+      );
+    }),
+    includeSecondReview: true,
+  });
+  expect(calls).toBe(2);
+  expect(result.status).toBe("stopped");
+  expect(result.cases[0].report?.status).toBe("completed");
+  expect(result.cases[0].second_review?.status).toBe("partial");
+  expect(result.metrics.second_review.successful_model_reviews).toBe(2);
+  expect(result.metrics.second_review.unresolved_candidates).toBe(1);
 });

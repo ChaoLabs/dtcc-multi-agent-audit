@@ -782,17 +782,32 @@ for (const action of [
   });
 }
 
-test("documentation is a real same-site PDF and setup stays on site", async ({
+test("documentation opens the same-site library and setup stays on site", async ({
   page,
   request,
 }) => {
   await page.goto(production);
+  await apiMode(page);
   const documentation = page.getByRole("link", { name: /Documentation/ });
   await expect(documentation).toBeVisible();
-  await expect(documentation).toHaveAttribute(
-    "href",
-    "/docs/DTCC_Platform_Overview.pdf",
-  );
+  await expect(documentation).toHaveAttribute("href", "/documentation");
+  await expect(documentation).toHaveAttribute("target", "_blank");
+  await expect(documentation).toHaveAttribute("rel", "noopener noreferrer");
+  const popupEvent = page.waitForEvent("popup");
+  await documentation.click();
+  const documentsPage = await popupEvent;
+  await expect(documentsPage).toHaveURL(`${production}/documentation`);
+  await expect(
+    documentsPage.getByRole("heading", {
+      name: "Orchestration design",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await documentsPage.close();
+  await expect(page).toHaveURL(`${production}/`);
+  await page.getByRole("button", { name: /^API analysis/ }).click();
+  await expect(page.locator(".connection-status")).toContainText("Key ready");
+  await page.keyboard.press("Escape");
   const pdf = await request.get(
     `${production}/docs/DTCC_Platform_Overview.pdf`,
   );

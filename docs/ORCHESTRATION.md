@@ -2,9 +2,11 @@
 
 ## Execution design
 
-A run dispatches GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7 concurrently through Bedrock Converse. Each receives the same source snapshot, numbered lines, review task, complete format contract and provider-native JSON Schema constraint. GPT also receives its required strict-format flag. No model sees static findings or another model's answer.
+A first-pass run dispatches GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7 concurrently through Bedrock Converse. Each receives the same source snapshot, numbered lines, review task, complete format contract and provider-native JSON Schema constraint. GPT also receives its required strict-format flag. No model sees static findings or another model's answer.
 
 The application orchestrator is a deterministic TypeScript supervisor. It manages bounded model attempts, deadlines and failure outcomes, validates model outputs, consolidates compatible findings, calculates distinct-model support and produces a traceable report. It does not invoke a fourth LLM or deploy Amazon Bedrock managed Agents. This implementation gives the platform a reproducible baseline for evaluating orchestration strategies.
+
+A separate, explicitly started second pass lets successful first-pass reviewers reconsider selected queued claims using peer context. This is a bounded reconsideration stage, not an endless agent conversation. The first-pass report and independent agreement remain immutable. [Written design](ORCHESTRATION_DESIGN.md) summarizes the end-to-end workflow.
 
 ## Validation before consolidation
 
@@ -68,30 +70,52 @@ A successful empty finding list does not establish safety. A consensus group wit
 | Terminal failures | Authentication/permission, invalid model request, invalid output/evidence, network ambiguity or local timeout |
 | Backoff | 500-1,000 ms jitter by default; honor a longer Retry-After only up to 5 seconds and when at least 1 second remains for an attempt |
 | Absolute deadlines | 180 seconds per model; 210 seconds for the server request; retries do not reset either clock |
-| Provider requests | At most six per analysis; a completed review is not rerun |
+| Provider requests | At most six per pass; at most twelve for an explicitly started first and second pass. Successful attempts are not retried |
 | Output bound | 8,192 tokens and 256,000 response bytes per attempt |
 | Cancellation | Stop waiting and prevent further attempts/cases; preserve completed case records |
 
 The supervisor records each attempt's outcome, elapsed time, sanitized error code and scheduled preceding retry delay. Model-run elapsed time includes actual waiting; the delay field records the planned backoff. Invalid output is not repaired or retried until it happens to pass. An exhausted budget becomes an explicit model failure; accepted peer reviews remain inspectable. Browser cancellation, changing source or replacing a key prevents late responses from overwriting newer state. Work already accepted by AWS may still be billed.
 
-Rate guards are local to a server instance: one active analysis per key hash, six analysis starts per minute per key hash and four active analyses overall. These are not distributed account quotas. Retries occur inside the acquired analysis slot and do not create additional parallel model tasks.
+Rate guards are local to a server instance: one active analysis per key hash, twelve pass starts per minute per key hash and four active analyses overall. Both route modules use the guard within one runtime, but Vercel can run them in separate functions or instances. These are not distributed account quotas or a deployment-wide concurrency guarantee. Retries occur inside the acquired analysis slot and do not create additional parallel model tasks.
 
 ## In-context prompt variants
 
 Standard instructions provide the baseline. Guided examples add small, fixed synthetic examples showing evidence format and the distinction between a suspicious operation and a supported vulnerability claim. Examples are separate from the five reference fixtures. They are not model training, do not change model weights and are not evidence for the submitted contract.
 
-A run uses one variant consistently across all three models. Neither variant supplies static findings, expected fixture labels or peer answers. Prompt variant/version and execution policy are part of the report so an exported result can be attributed to the actual experiment. A separate invocation is required to compare variants. No quality improvement is claimed before a reviewed evaluation.
+A first-pass run uses one variant consistently across all three models. Neither first-pass variant supplies static findings, expected fixture labels or peer answers. The second review uses its own versioned peer-informed instructions and selected first-pass claims. Prompt variant/version and execution policy are part of the report so an exported result can be attributed to the actual experiment. A separate invocation is required to compare variants. No quality improvement is claimed before a reviewed evaluation.
+
+## One bounded second review
+
+`POST /api/reviews/second-round` accepts the original source and validated first-pass snapshot. A report must use the current first-pass execution contract and have at least two successful reviewers. All successful first-pass reviewers receive the same selected claim set; previously failed models are not recovered by this stage.
+
+The first twelve queue entries are selected in stable first-pass finding order: severity, source line and finding ID. Remaining entries are explicitly deferred for manual review. The selected claims include original model contributions and their source evidence. The context distinguishes own prior assessments from peer assessments but omits peer provider identities, vote counts, consensus labels, static findings and recommendations. Source and peer text are explicitly untrusted data, never instructions. Each eligible reviewer reconsiders every selected claim, including its own; it can support, reject or remain uncertain. It cannot introduce a new finding outside that set.
+
+Each assessment contains a candidate ID, verdict (`supported`, `not_supported` or `uncertain`), rationale and exact source-bound evidence. A supported assessment must supply HIGH/MEDIUM/LOW severity; other verdicts require null severity. Every selected claim requires exactly one assessment from a successful second-pass reviewer. Unknown, duplicate or missing candidate IDs, malformed content and incorrect excerpts reject that review.
+
+The second-pass summary is conservative:
+
+- All three configured models must support the claim with the same severity to produce `supported`.
+- All three must explicitly return `not_supported` to produce `not_supported`.
+- Mixed verdicts, uncertainty, severity differences, unavailable or missing reviewers, and deferred claims remain `unresolved`.
+
+Agreement among only two eligible reviewers remains unresolved because the third configured reviewer is unavailable. All original first-pass supporters and agreement levels remain unchanged. Second-pass decisions are peer-informed and correlated; they are not extra independent votes or statistically calibrated confidence.
+
+The second pass is limited to one round, twelve selected claims, three eligible models and at most six additional provider requests. It uses the same 180-second per-model, 210-second server and two-attempt bounds as the first pass, within a separate 240-second function execution. If eligibility is not met or no queued claims exist, the stage is skipped without a model call. Selected and deferred claims, model failures and the reason for skipping remain explicit.
+
+Second-review execution status is separate from claim status. `completed` means every assigned reviewer returned a valid assessment set; claims can still be unresolved, including when only two reviewers were eligible. `partial` and `failed` describe execution coverage, not claim truth.
+
+A fingerprint binds the second review to the complete validated first-pass snapshot and source. This detects a mismatched baseline; it is not a signed AWS attestation. The first-pass data is never edited to make the later review look consistent. A failure in the second pass leaves the first pass available.
 
 ## Reports and reproducibility
 
-New version **2.1.0** multi-model responses/exports preserve execution-policy and prompt provenance, per-attempt outcomes, and the source identity, model identities, original accepted reviews, failure states, timestamps, elapsed times, available token usage, consolidated findings and group membership. JSON supports downstream inspection; Markdown provides a readable record. Static results remain separately attributed and retain their original schema.
+First-pass version **2.1.0** reports preserve execution-policy and prompt provenance, per-attempt outcomes, and the source identity, model identities, original accepted reviews, failure states, timestamps, elapsed times, available token usage, consolidated findings and group membership. JSON supports downstream inspection; Markdown provides a readable record. Static results remain separately attributed and retain their original schema.
 
 Consensus IDs bind the source hash, consolidation-algorithm revision, canonical category and grouping location. The grouping algorithm remains at revision 2.0.0; the 2.1.0 envelope adds execution provenance without changing finding identities. Findings are sorted by descending severity, source line and stable ID. The browser recomputes the consolidation from the source-bound original reviews and rejects inconsistent group membership, agreement or provenance.
 
-Agreement counts can be reproduced from the accepted member findings without another paid model call. Exporting the report does not expose the API key. The original independent reviews remain available to audit the consolidation decision and compare it with alternative algorithms. The API returns the council object; JSON downloads wrap it with the static report and a matching export schema version. Historical **2.0.0** reports remain supported without inventing missing attempt history.
+Agreement counts can be reproduced from the accepted member findings without another paid model call. Exporting the report does not expose the API key. The original independent reviews remain available to audit the consolidation decision and compare it with alternative algorithms. The API returns the council object; JSON downloads wrap it with the static report and a matching export schema version. Historical **2.0.0** first-pass reports remain readable without inventing missing attempt history; they are not eligible baselines for the new second-review stage. The second-review report has its own **1.0.0** schema, `peer-informed-reassessment` engine, baseline fingerprint, policy/prompt versions, reviewer assessments, attempts, summaries and deferred claims. A second-review export uses `{schema_version: "1.0.0", kind: "dtcc-second-review", first_round, second_round, interpretation}` and includes the static report/source when supplied by the workspace. The standalone first-pass export remains version 2.1.0. Both original and reconsidered records are preserved.
 
 ## Evaluation needed
 
-The browser can run the existing five contracts sequentially for one prompt variant and export the full outcomes. Each suite is limited to five analyses and at most 30 provider requests. Cancellation prevents subsequent cases; completed records remain available. See [the fixed five-case protocol](EVALUATION.md).
+The browser can run the existing five contracts sequentially for one prompt variant and export the full outcomes. A first-pass-only suite is limited to 30 provider requests and a 20-minute browser batch ceiling. Enabling the second review pairs each first pass with its own reconsideration, at most 60 provider requests and a 40-minute ceiling. Cancellation prevents subsequent cases; completed records remain available. See [the fixed five-case protocol](EVALUATION.md).
 
 Mocked transport tests and deterministic examples verify the implementation's behavior. Real model quality requires reviewed data, benign controls, held-out contracts and comparisons against each individual model. Relevant measures include precision/recall, false-positive rate, missed vulnerabilities, disagreement, latency and cost. No reliability improvement is claimed before that evaluation.

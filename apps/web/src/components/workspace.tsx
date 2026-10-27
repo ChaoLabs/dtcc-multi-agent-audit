@@ -11,8 +11,18 @@ import {
   type ConsensusFinding,
 } from "@/lib/orchestration";
 import { downloadCouncilReport } from "@/lib/council-export";
+import { downloadSecondReviewReport } from "@/lib/second-review-export";
+import {
+  buildSecondReviewPlan,
+  type SecondReviewReport,
+} from "@/lib/second-review";
+import {
+  requestSecondReview,
+  SecondReviewRequestError,
+} from "@/lib/second-review-client";
 import type { PromptVariant } from "@/lib/review-policy";
 import { EvaluationPanel } from "./evaluation-panel";
+import { SecondReviewPanel } from "./second-review-panel";
 import { analyzeStatic, validateInput } from "@/lib/static-analysis";
 import { BEDROCK_MODELS, validateApiKey } from "@/lib/bedrock-config";
 import { Icon } from "./icons";
@@ -46,6 +56,14 @@ export default function Workspace({ cases }: { cases: Case[] }) {
   const [selected, setSelected] = useState(cases[0].id);
   const [report, setReport] = useState<AuditReport | null>(cases[0].report);
   const [council, setCouncil] = useState<CouncilReport | null>(null);
+  const [secondReview, setSecondReview] = useState<SecondReviewReport | null>(
+    null,
+  );
+  const [secondBusy, setSecondBusy] = useState(false);
+  const [secondAttempted, setSecondAttempted] = useState(false);
+  const [secondError, setSecondError] = useState("");
+  const secondRequest = useRef<AbortController | null>(null);
+  const secondGeneration = useRef(0);
   const [resultView, setResultView] = useState<"static" | "consensus">(
     "static",
   );
@@ -92,6 +110,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     return () => {
       mounted.current = false;
       request.current?.abort();
+      secondRequest.current?.abort();
       apiKey.current = "";
     };
   }, []);
@@ -138,7 +157,15 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     0;
   function exportReport(format: "json" | "md") {
     if (!validReport) return;
-    if (validCouncil) downloadCouncilReport(validReport, format, validCouncil);
+    if (validCouncil && secondReview)
+      downloadSecondReviewReport(
+        validCouncil,
+        secondReview,
+        format,
+        validReport,
+      );
+    else if (validCouncil)
+      downloadCouncilReport(validReport, format, validCouncil);
     else downloadReport(validReport, format);
   }
   function changeResultView(next: "static" | "consensus") {
@@ -155,9 +182,20 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     setFocusTarget(null);
   }
 
+  const resetSecondReview = useCallback(() => {
+    secondGeneration.current++;
+    secondRequest.current?.abort();
+    secondRequest.current = null;
+    setSecondBusy(false);
+    setSecondReview(null);
+    setSecondAttempted(false);
+    setSecondError("");
+  }, []);
+
   const invalidate = useCallback(() => {
     version.current++;
     request.current?.abort();
+    resetSecondReview();
     setBusy(false);
     setReport(null);
     setCouncil(null);
@@ -166,7 +204,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     setCopied(false);
     setFocusTarget(null);
     findingsView.current?.scrollTo({ top: 0 });
-  }, []);
+  }, [resetSecondReview]);
 
   function loadCase(item: Case) {
     invalidate();
@@ -246,6 +284,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
 
   function switchMode(next: "static" | "api") {
     evaluationRequest.current?.abort();
+    if (secondBusy) cancelSecondReview();
     if (busy) {
       version.current++;
       request.current?.abort();
@@ -257,7 +296,8 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     if (next === "api") apiDialog.current?.showModal();
   }
   function changePrompt(next: PromptVariant) {
-    if (busy || evaluating) return;
+    if (busy || evaluating || secondBusy) return;
+    resetSecondReview();
     setPromptVariant(next);
     setCouncil(null);
     setReviewQueueOnly(false);
@@ -270,6 +310,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
       const key = validateApiKey(keyInput.current?.value ?? "");
       version.current++;
       request.current?.abort();
+      resetSecondReview();
       setBusy(false);
       setCouncil(null);
       setFocusTarget(null);
@@ -290,6 +331,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
   }
   function clearKey() {
     evaluationRequest.current?.abort();
+    resetSecondReview();
     version.current++;
     request.current?.abort();
     setBusy(false);
@@ -304,7 +346,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     setConfigError("");
   }
   const runAudit = useCallback(async () => {
-    if (evaluating || busy) return;
+    if (evaluating || busy || secondBusy || secondRequest.current) return;
     if (mode === "api" && !apiKey.current) {
       apiDialog.current?.showModal();
       return;
@@ -391,7 +433,80 @@ export default function Workspace({ cases }: { cases: Case[] }) {
       clearTimeout(timer);
       if (stamp === version.current && mounted.current) setBusy(false);
     }
-  }, [filename, source, mode, invalidate, promptVariant, evaluating, busy]);
+  }, [
+    filename,
+    source,
+    mode,
+    invalidate,
+    promptVariant,
+    evaluating,
+    busy,
+    secondBusy,
+  ]);
+
+  async function runSecondReview() {
+    if (
+      busy ||
+      evaluating ||
+      secondBusy ||
+      secondAttempted ||
+      secondRequest.current ||
+      !validCouncil ||
+      validCouncil.schema_version !== "2.1.0"
+    )
+      return;
+    if (!apiKey.current) {
+      apiDialog.current?.showModal();
+      return;
+    }
+    const plan = buildSecondReviewPlan(validCouncil);
+    if (plan.skipped_reason || !plan.candidate_ids.length) return;
+    const stamp = ++secondGeneration.current;
+    const abort = new AbortController();
+    secondRequest.current = abort;
+    setSecondBusy(true);
+    setSecondAttempted(true);
+    setSecondError("");
+    try {
+      const result = await requestSecondReview({
+        apiKey: apiKey.current,
+        filename,
+        source,
+        baseline: validCouncil,
+        signal: abort.signal,
+      });
+      if (
+        !mounted.current ||
+        secondGeneration.current !== stamp ||
+        abort.signal.aborted
+      )
+        return;
+      setSecondReview(result);
+    } catch (cause) {
+      if (mounted.current && secondGeneration.current === stamp)
+        setSecondError(
+          abort.signal.aborted
+            ? "Second review stopped. Independent results are retained."
+            : cause instanceof SecondReviewRequestError
+              ? `${cause.message} Independent results are retained.`
+              : "Second review did not return a valid result. Independent results are retained. Start a new API analysis before another experiment.",
+        );
+    } finally {
+      if (secondRequest.current === abort) secondRequest.current = null;
+      if (mounted.current && secondGeneration.current === stamp)
+        setSecondBusy(false);
+    }
+  }
+
+  function cancelSecondReview() {
+    secondGeneration.current++;
+    secondRequest.current?.abort();
+    secondRequest.current = null;
+    setSecondBusy(false);
+    setSecondError(
+      "Second review cancelled. Independent results are retained; no further second-round calls will be started by this browser.",
+    );
+  }
 
   function cancel() {
     version.current++;
@@ -441,13 +556,13 @@ export default function Workspace({ cases }: { cases: Case[] }) {
             <button onClick={() => caseDialog.current?.showModal()}>
               Reference cases
             </button>
-            <a
-              href="/docs/DTCC_Platform_Overview.pdf"
+            <Link
+              href="/documentation"
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
             >
-              Documentation <span className="nav-format">PDF</span>
-            </a>
+              Documentation
+            </Link>
           </nav>
           <a
             className="repository-link"
@@ -466,7 +581,8 @@ export default function Workspace({ cases }: { cases: Case[] }) {
             (event.metaKey || event.ctrlKey) &&
             event.key === "Enter" &&
             !busy &&
-            !evaluating
+            !evaluating &&
+            !secondBusy
           ) {
             event.preventDefault();
             void runAudit();
@@ -546,6 +662,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
               onPromptChange={changePrompt}
               onEvaluate={() => evaluationDialog.current?.showModal()}
               evaluating={evaluating}
+              blocked={secondBusy}
             />
           )}
           <div className="workspace-grid">
@@ -656,7 +773,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                 ) : (
                   <button
                     className="run-button"
-                    disabled={!source.trim() || evaluating}
+                    disabled={!source.trim() || evaluating || secondBusy}
                     onClick={() => void runAudit()}
                   >
                     <Icon
@@ -864,6 +981,27 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                       exploitability.
                     </span>
                   </div>
+                )}
+                {showConsensus && validCouncil?.schema_version === "2.1.0" && (
+                  <SecondReviewPanel
+                    baseline={validCouncil}
+                    report={secondReview}
+                    busy={secondBusy}
+                    attempted={secondAttempted}
+                    blocked={busy || evaluating}
+                    error={secondError}
+                    onRun={() => void runSecondReview()}
+                    onCancel={cancelSecondReview}
+                    onExport={exportReport}
+                    onEvidence={(findingId, evidence) =>
+                      focusCandidate(
+                        findingId,
+                        evidence.line_start,
+                        false,
+                        evidence,
+                      )
+                    }
+                  />
                 )}
                 {showConsensus && !validCouncil && !busy ? (
                   <div className="empty-state">
@@ -1100,7 +1238,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
         onPromptChange={changePrompt}
         getApiKey={() => apiKey.current}
         hasKey={hasKey}
-        analysisBusy={busy}
+        analysisBusy={busy || secondBusy}
         onBusyChange={setEvaluating}
         onConnect={() => {
           evaluationDialog.current?.close();
@@ -1211,6 +1349,26 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                         </dd>
                       </div>
                     ))}
+                    {secondReview && (
+                      <>
+                        <div>
+                          <dt>Second review</dt>
+                          <dd>
+                            {secondReview.status} ·{" "}
+                            {secondReview.execution.total_attempts} / 6
+                            additional attempts
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Peer-review prompt</dt>
+                          <dd>{secondReview.prompt_version}</dd>
+                        </div>
+                        <div>
+                          <dt>First-round record</dt>
+                          <dd>{secondReview.baseline_sha256}</dd>
+                        </div>
+                      </>
+                    )}
                   </>
                 )}
               </dl>
@@ -1272,6 +1430,19 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                   models and severity disagreements remain visible in a review
                   queue. A bounded controller permits one retry for a transient
                   service response and stops at the model or run deadline.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span>04</span>
+              <div>
+                <h3>Reassess disputed findings</h3>
+                <p>
+                  An optional second round gives completed reviewers the source
+                  evidence behind disputed candidates. Models can support a
+                  claim, decline to support it, or remain uncertain. Their
+                  original independent findings stay unchanged; peer-informed
+                  opinions are recorded separately for human review.
                 </p>
               </div>
             </li>

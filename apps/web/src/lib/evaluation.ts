@@ -2,6 +2,15 @@ import cases from "@/generated/cases.json";
 import { validateApiKey } from "@/lib/bedrock-config";
 import { validateCouncil, type CouncilReport } from "@/lib/orchestration";
 import { PROMPT_VERSION, type PromptVariant } from "@/lib/review-policy";
+import {
+  buildSecondReviewPlan,
+  buildSecondReviewReport,
+  type SecondReviewReport,
+} from "@/lib/second-review";
+import {
+  requestSecondReview,
+  SecondReviewRequestError,
+} from "@/lib/second-review-client";
 
 /** This fixed regression set is not an independent accuracy benchmark. */
 export const EVALUATION_CASES = Object.freeze(
@@ -26,9 +35,21 @@ export type EvaluationCaseResult = {
   report: CouncilReport | null;
   error: string | null;
   elapsed_ms: number;
+  second_review: SecondReviewReport | null;
+  second_review_status:
+    | "not_requested"
+    | "pending"
+    | "running"
+    | "completed"
+    | "partial"
+    | "skipped"
+    | "failed"
+    | "cancelled";
+  second_review_error: string | null;
 };
 export type EvaluationReport = {
-  schema_version: "1.0.0";
+  schema_version: "1.1.0";
+  review_mode: "independent" | "paired-second-review";
   prompt_variant: PromptVariant;
   prompt_version: typeof PROMPT_VERSION;
   created_at: string;
@@ -46,6 +67,22 @@ export type EvaluationReport = {
     review_required: number;
     input_tokens: number | null;
     output_tokens: number | null;
+    second_review: {
+      completed_cases: number;
+      partial_cases: number;
+      failed_cases: number;
+      skipped_cases: number;
+      successful_model_reviews: number;
+      planned_model_reviews: number;
+      observed_attempts: number;
+      new_supports: number;
+      withdrawn_supports: number;
+      uncertain_after_support: number;
+      unresolved_candidates: number;
+      deferred_candidates: number;
+      input_tokens: number | null;
+      output_tokens: number | null;
+    };
   };
 };
 
@@ -57,6 +94,36 @@ function metrics(results: EvaluationCaseResult[]): EvaluationReport["metrics"] {
     reviewed.length && reviewed.every((review) => review[field] !== null)
       ? reviewed.reduce((sum, review) => sum + (review[field] ?? 0), 0)
       : null;
+  const second = results.flatMap((entry) =>
+    entry.second_review ? [entry.second_review] : [],
+  );
+  const secondRuns = second.flatMap((entry) => entry.models);
+  const secondReviews = secondRuns.flatMap((run) =>
+    run.review ? [run.review] : [],
+  );
+  const secondTokens = (field: "input_tokens" | "output_tokens") =>
+    secondReviews.length &&
+    secondReviews.every((review) => review[field] !== null)
+      ? secondReviews.reduce((sum, review) => sum + (review[field] ?? 0), 0)
+      : null;
+  let newSupports = 0,
+    withdrawn = 0,
+    uncertain = 0;
+  for (const entry of results) {
+    if (!entry.report || !entry.second_review) continue;
+    for (const run of entry.second_review.models) {
+      for (const assessment of run.review?.assessments ?? []) {
+        const original = entry.report.findings.find(
+          (finding) => finding.id === assessment.finding_id,
+        );
+        const supported =
+          original?.supporting_models.includes(run.model_id) ?? false;
+        if (!supported && assessment.verdict === "supported") newSupports++;
+        if (supported && assessment.verdict === "not_supported") withdrawn++;
+        if (supported && assessment.verdict === "uncertain") uncertain++;
+      }
+    }
+  }
   return {
     completed_cases: results.filter((item) => item.status === "completed")
       .length,
@@ -78,6 +145,54 @@ function metrics(results: EvaluationCaseResult[]): EvaluationReport["metrics"] {
     ),
     input_tokens: tokenTotal("input_tokens"),
     output_tokens: tokenTotal("output_tokens"),
+    second_review: {
+      completed_cases: second.filter((report) => report.status === "completed")
+        .length,
+      partial_cases: second.filter((report) => report.status === "partial")
+        .length,
+      failed_cases: results.filter(
+        (entry) => entry.second_review_status === "failed",
+      ).length,
+      skipped_cases: results.filter(
+        (entry) => entry.second_review_status === "skipped",
+      ).length,
+      successful_model_reviews: secondReviews.length,
+      planned_model_reviews: results.reduce(
+        (sum, entry) =>
+          sum +
+          (entry.report &&
+          entry.second_review_status !== "not_requested" &&
+          entry.second_review_status !== "pending"
+            ? buildSecondReviewPlan(entry.report).model_ids.length
+            : 0),
+        0,
+      ),
+      observed_attempts: secondRuns.reduce(
+        (sum, run) => sum + run.attempts.length,
+        0,
+      ),
+      new_supports: newSupports,
+      withdrawn_supports: withdrawn,
+      uncertain_after_support: uncertain,
+      unresolved_candidates: results.reduce(
+        (sum, entry) =>
+          sum +
+          (entry.second_review
+            ? entry.second_review.findings.filter(
+                (finding) => finding.status === "unresolved",
+              ).length
+            : entry.second_review_status !== "not_requested"
+              ? (entry.report?.review_queue?.length ?? 0)
+              : 0),
+        0,
+      ),
+      deferred_candidates: second.reduce(
+        (sum, report) => sum + report.plan.deferred_ids.length,
+        0,
+      ),
+      input_tokens: secondTokens("input_tokens"),
+      output_tokens: secondTokens("output_tokens"),
+    },
   };
 }
 
@@ -88,12 +203,14 @@ function metrics(results: EvaluationCaseResult[]): EvaluationReport["metrics"] {
 export async function runEvaluation({
   apiKey,
   promptVariant,
+  includeSecondReview = false,
   signal,
   onProgress,
   transport = fetch,
 }: {
   apiKey: string;
   promptVariant: PromptVariant;
+  includeSecondReview?: boolean;
   signal: AbortSignal;
   onProgress?: (report: EvaluationReport) => void;
   transport?: typeof fetch;
@@ -105,10 +222,16 @@ export async function runEvaluation({
     throw new Error("The validation set must contain exactly five contracts.");
   const start = performance.now();
   const deadline = new AbortController();
-  const timer = setTimeout(() => deadline.abort(), 20 * 60_000);
+  if (typeof includeSecondReview !== "boolean")
+    throw new Error("Choose a supported review mode.");
+  const timer = setTimeout(
+    () => deadline.abort(),
+    (includeSecondReview ? 40 : 20) * 60_000,
+  );
   const batchSignal = AbortSignal.any([signal, deadline.signal]);
   const result: EvaluationReport = {
-    schema_version: "1.0.0",
+    schema_version: "1.1.0",
+    review_mode: includeSecondReview ? "paired-second-review" : "independent",
     prompt_variant: promptVariant,
     prompt_version: PROMPT_VERSION,
     created_at: new Date().toISOString(),
@@ -123,6 +246,9 @@ export async function runEvaluation({
       report: null,
       error: null,
       elapsed_ms: 0,
+      second_review: null,
+      second_review_status: includeSecondReview ? "pending" : "not_requested",
+      second_review_error: null,
     })),
     metrics: metrics([]),
   };
@@ -216,8 +342,70 @@ export async function runEvaluation({
               : "No valid report was received for this case. Review the connection and retry manually.";
       } finally {
         clearTimeout(caseTimer);
-        entry.elapsed_ms = Math.round(performance.now() - caseStart);
       }
+      // The second round uses this exact accepted first-pass snapshot. It never
+      // repeats the first round to manufacture a comparison, nor rewrites it.
+      if (
+        includeSecondReview &&
+        entry.report &&
+        !stop &&
+        !batchSignal.aborted
+      ) {
+        entry.second_review_status = "running";
+        onProgress?.(snapshot());
+        try {
+          const plan = buildSecondReviewPlan(entry.report);
+          const second = plan.skipped_reason
+            ? await buildSecondReviewReport([], fixture.source, entry.report, 0)
+            : await requestSecondReview({
+                apiKey: key,
+                filename: fixture.filename,
+                source: fixture.source,
+                baseline: entry.report,
+                signal: batchSignal,
+                transport,
+              });
+          batchSignal.throwIfAborted();
+          entry.second_review = second;
+          entry.second_review_status = second.status;
+          stop = second.models.some(
+            (run) =>
+              run.error &&
+              ["bedrock_access", "bedrock_rate_limit"].includes(run.error.code),
+          );
+          if (stop)
+            entry.second_review_error =
+              "A second-round model reported an access or rate limit error. Remaining cases were not started.";
+          else if (second.status === "failed")
+            entry.second_review_error =
+              "No model completed the second review. The independent review is retained.";
+        } catch (error) {
+          entry.second_review_status = batchSignal.aborted
+            ? "cancelled"
+            : "failed";
+          entry.second_review_error = batchSignal.aborted
+            ? "Second review cancelled; the independent review is retained."
+            : error instanceof SecondReviewRequestError
+              ? error.message
+              : "Second review could not be validated; the independent review is retained.";
+          if (
+            error instanceof SecondReviewRequestError &&
+            [401, 403, 429].includes(error.status ?? 0)
+          )
+            stop = true;
+        }
+      }
+      if (includeSecondReview && entry.second_review_status === "pending") {
+        entry.second_review_status = batchSignal.aborted
+          ? "cancelled"
+          : "skipped";
+        entry.second_review_error = batchSignal.aborted
+          ? "Second review was not started because validation stopped."
+          : entry.report
+            ? "Second review was not started after an access or rate limit failure."
+            : "Second review requires a validated independent report.";
+      }
+      entry.elapsed_ms = Math.round(performance.now() - caseStart);
       if (batchSignal.aborted)
         result.status = signal.aborted ? "cancelled" : "stopped";
       else if (stop) result.status = "stopped";
@@ -237,7 +425,7 @@ export function downloadEvaluation(report: EvaluationReport) {
         {
           ...report,
           interpretation:
-            "Fixed five-contract regression set, not an accuracy benchmark. Tokens cover returned successful reviews only; failed attempts and cancelled requests may incur unreported usage. Observed attempts omit legacy reports without attempt metadata and requests for which no validated council returned. Agreement is not correctness. Compare prompt variants only with human-reviewed findings.",
+            "Fixed five-contract regression set, not an accuracy benchmark. Paired mode preserves each exact independent review and adds at most one peer-informed second round. New or withdrawn support measures opinion changes, not accuracy. Independent agreement never changes. Tokens cover returned successful reviews only; failed attempts and cancelled requests may incur unreported usage. Observed attempts omit requests with no validated report. Compare modes and prompt variants using repeated runs and human-reviewed findings, including missed issues and false positives.",
           case_caveats: EVALUATION_CASES.map(({ id, caveat }) => ({
             id,
             caveat,
@@ -252,7 +440,7 @@ export function downloadEvaluation(report: EvaluationReport) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `dtcc-validation-${report.prompt_variant}-${report.created_at.replace(/[:.]/g, "-")}.json`;
+  link.download = `dtcc-validation-${report.review_mode}-${report.prompt_variant}-${report.created_at.replace(/[:.]/g, "-")}.json`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

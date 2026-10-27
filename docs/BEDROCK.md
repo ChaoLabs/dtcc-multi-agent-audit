@@ -47,9 +47,11 @@ Visibility in the Model catalog does not establish invocation permission. Saving
 
 ## Website request and result behavior
 
-The browser sends the current source and key to its own `POST /api/reviews` route. The Node.js function sends three concurrent requests with the same review task, formatting instructions and numbered source. Each model works without seeing static findings or another model's output. Static analysis remains a separate view and never contributes a consensus vote.
+For the first pass, the browser sends the current source and key to its own `POST /api/reviews` route. The Node.js function sends three concurrent requests with the same review task, formatting instructions and numbered source. Each first-pass model works without seeing static findings or another model's output. Static analysis remains a separate view and never contributes a consensus vote.
 
-A complete run has three accepted reviews. A partial run retains successful reviews and names the failed model(s). An all-failed run is explicitly failed. A successful empty finding array, partial coverage, or absence of results never establishes safety.
+After a valid first pass with at least two successful models, an explicit second review can send the same source and selected queued claims to `POST /api/reviews/second-round`. Only successful first-pass reviewers participate, and their peer-informed assessments remain separate from first-pass agreement. At most twelve queued claims are reconsidered; remaining claims are deferred.
+
+A complete first-pass run has three accepted reviews. A partial run retains successful reviews and names the failed model(s). An all-failed run is explicitly failed. A successful empty finding array, partial coverage, or absence of results never establishes safety.
 
 The application holds the key in the current tab's memory and active server request. Credentials never enter a model prompt, report export, cookie, localStorage, database, shared process environment or application log. Unsaved input clears when the dialog closes. Refresh or **Clear key** removes the browser connection; replacing/clearing the key aborts an active request and prevents stale results from appearing.
 
@@ -58,17 +60,19 @@ Running API analysis sends the contract through this site's server to AWS. The A
 | Limit | Value |
 | --- | --- |
 | Source | 48,000 UTF-8 bytes / 1,200 lines / 2,000 characters per line |
-| Request body | 128,000 bytes; 10-second read deadline |
-| Model calls | Three parallel model tasks; at most two attempts each, six calls per analysis; no fallback models |
+| First-pass request body | 128,000 bytes; 10-second read deadline |
+| Second-pass request body | 1,500,000 bytes including the baseline; 10-second read deadline |
+| Second-pass source/claim context | 256,000 serialized bytes per reviewer; rejected before calls when exceeded |
+| Model calls | Up to three parallel model tasks per pass; at most two attempts each, six calls per pass; no fallback models |
 | Output per attempt | 8,192 tokens / 256,000 response bytes |
-| Deadline | 180 seconds per model; 210 seconds overall server request |
+| Deadline | 180 seconds per model; 210 seconds per pass request; second review uses a separate request |
 | Function duration | 240 seconds, with Vercel Fluid compute enabled |
 
-Per-instance guards allow one simultaneous analysis and six analysis runs per minute per key hash, with four active analyses total. These are resource bounds, not a distributed quota. Invalid JSON, truncated output or invented source evidence fails the affected model review. New API response/export schema **2.1.0** retains model outcomes, accepted original reviews, consensus membership, agreement/severity metadata, prompt provenance and attempt history. Historical **2.0.0** reports remain readable.
+Per-instance guards allow one simultaneous analysis and twelve pass starts per minute per key hash, with four active passes per runtime. Both route imports share the guard only within one runtime. Separate serverless functions/instances do not share this memory; these resource bounds are not distributed quotas. Invalid JSON, truncated output or invented source evidence fails the affected model review. The first-pass **2.1.0** report retains model outcomes, accepted original reviews, consensus membership, agreement/severity metadata, prompt provenance and attempt history. Historical **2.0.0** first-pass reports remain readable but cannot start a second review. The separate second-review **1.0.0** report binds the exact first-pass snapshot and records decisions without changing its votes.
 
-The supervisor retries only explicit HTTP 429, 500, 502, 503 and 504 responses, at most once per model. Backoff is bounded and never resets the model or overall deadline. Authentication, permission, invalid request, output-validation, network-ambiguity and timeout failures do not automatically retry. Accepted reviews are not rerun to fill a missing vote. See [the orchestration policy](ORCHESTRATION.md).
+The supervisor retries only explicit HTTP 429, 500, 502, 503 and 504 responses, at most once per model. Backoff is bounded and never resets the model or overall deadline. Authentication, permission, invalid request, output-validation, network-ambiguity and local-timeout failures do not automatically retry. HTTP 408 and 424 are outside the retry allowlist; refreshing does not change a terminal failure into a temporary one. Accepted reviews are not rerun to fill a missing vote. See [the orchestration policy](ORCHESTRATION.md).
 
-For a controlled comparison, select standard instructions or guided examples before running analysis. The same variant is used by all three models. The five-case validation workflow sends the five existing reference contracts sequentially, at most 30 provider requests per variant, and exports the outcomes. This is an explicitly started API operation billed to the supplied key's account.
+For a controlled comparison, select standard instructions or guided examples before running analysis. The same variant is used by all three models. The five-case validation workflow sends the five existing reference contracts sequentially. First-pass-only mode makes at most 30 provider requests per variant; selecting Include second review allows at most 60. Each second review is paired with its own first-pass baseline, and the export retains both outcomes. This is an explicitly started API operation billed to the supplied key's account.
 
 ## Troubleshooting
 
