@@ -8,6 +8,9 @@
   "functions": {
     "src/app/api/reviews/route.ts": {
       "supportsCancellation": true
+    },
+    "src/app/api/reviews/second-round/route.ts": {
+      "supportsCancellation": true
     }
   }
 }

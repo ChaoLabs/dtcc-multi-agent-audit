@@ -921,7 +921,7 @@ test("proxy request compares the actual Host and rejects forged forwarded-host v
 
 test("request guard caps repeated runs without retaining raw credentials", async () => {
   const limiter = createLimiter();
-  for (let i = 0; i < 6; i++) limiter(key)();
+  for (let i = 0; i < 12; i++) limiter(key)();
   expect(() => limiter(key)).toThrow("Analysis is busy");
 });
 

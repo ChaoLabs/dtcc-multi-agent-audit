@@ -29,13 +29,7 @@ export default function GuidePage() {
           </Link>
           <nav aria-label="Guide navigation">
             <Link href="/">Workspace</Link>
-            <a
-              href="/docs/DTCC_Platform_Overview.pdf"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Documentation <span className="nav-format">PDF</span>
-            </a>
+            <Link href="/documentation">Documentation</Link>
           </nav>
           <a
             className="repository-link"
@@ -63,6 +57,7 @@ export default function GuidePage() {
           <a href="#static">Static analysis</a>
           <a href="#bedrock">Connect Bedrock</a>
           <a href="#reports">Read the report</a>
+          <a href="#second-review">Second review</a>
           <a href="#evaluation">Validate five cases</a>
           <a href="#local">Run locally</a>
         </nav>
@@ -131,7 +126,9 @@ export default function GuidePage() {
               API analysis sends your key and source through this site&apos;s
               server to AWS. Your AWS account&apos;s model permissions, logging
               settings and usage charges apply. Each model reviews the source
-              independently, without seeing static findings or peer results.
+              independently in the first round, without seeing static findings
+              or peer results. An optional second round shares selected,
+              source-validated peer claims for reassessment.
             </aside>
             <p>
               The application holds your key only in this tab&apos;s memory and
@@ -195,8 +192,56 @@ export default function GuidePage() {
             </a>
           </div>
         </section>
-        <section id="evaluation" className="guide-section">
+        <section id="second-review" className="guide-section">
           <span className="guide-number">04</span>
+          <div>
+            <h2>Reassess disputed findings once</h2>
+            <p>
+              After an independent API review, choose{" "}
+              <strong>Run second review</strong>. At least two first-round
+              models must have completed. Each eligible model reassesses up to
+              12 queued candidates using the source and the original claims.
+              Remaining candidates are explicitly deferred. A finding not
+              reported in the first round is a reason to ask for reassessment,
+              not evidence that the model rejected it.
+            </p>
+            <p>
+              Each model must answer <strong>Supported</strong>,{" "}
+              <strong>Not supported</strong>, or <strong>Uncertain</strong>,
+              with a rationale and exact source evidence. Models can withdraw
+              their original support. The new results are labeled peer-informed;
+              they never replace the first report or increase its independent
+              confidence score.
+            </p>
+            <p>
+              This adds one round of at most six provider calls, with the same
+              retry and time limits as the first round. The two rounds use
+              separate requests, each with a 210-second server deadline. Cancel
+              or failure preserves the independent results. A new independent
+              review is required to start another second-round attempt in this
+              workspace; there is no automatic debate loop.
+            </p>
+            <p>
+              Missing, uncertain, conflicting, or deferred judgments remain
+              unresolved. A unanimous peer-informed conclusion still requires
+              human validation.
+            </p>
+            <a
+              className="guide-document"
+              href="/docs/DTCC_Orchestration_Design.pdf"
+              target="_blank"
+              rel="noreferrer"
+            >
+              <Icon name="file" />
+              Orchestration design &amp; evaluation protocol
+              <span>
+                PDF <Icon name="up" size={14} />
+              </span>
+            </a>
+          </div>
+        </section>
+        <section id="evaluation" className="guide-section">
+          <span className="guide-number">05</span>
           <div>
             <h2>Compare prompts on the same five cases</h2>
             <p>
@@ -215,6 +260,22 @@ export default function GuidePage() {
               records remain available for export.
             </p>
             <p>
+              Enable <strong>Include second review</strong> for a paired
+              experiment: each case keeps its exact independent result and adds
+              one eligible second review. This mode allows at most 60 provider
+              requests and 40 minutes per five-case batch. Cases with no
+              eligible disagreements skip additional model calls. Access or
+              rate-limit failures stop remaining cases rather than repeating
+              them.
+            </p>
+            <p>
+              Compare new support, withdrawn support, uncertain judgments, and
+              unresolved candidates against the preserved first-pass findings.
+              These are opinion changes, not confirmed corrections. Review false
+              positives and missed vulnerabilities separately using the same
+              criteria for both rounds.
+            </p>
+            <p>
               Download the evaluation JSON to compare completion, attempts,
               latency, available token usage and differences between findings.
               Returned token counters may omit failed-attempt usage. These are
@@ -225,7 +286,7 @@ export default function GuidePage() {
           </div>
         </section>
         <section id="local" className="guide-section">
-          <span className="guide-number">05</span>
+          <span className="guide-number">06</span>
           <div>
             <h2>Run the workspace on your computer</h2>
             <p>

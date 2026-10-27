@@ -28,6 +28,7 @@ export function CouncilStatus({
   onPromptChange,
   onEvaluate,
   evaluating,
+  blocked = false,
 }: {
   report: CouncilReport | null;
   busy: boolean;
@@ -37,6 +38,7 @@ export function CouncilStatus({
   onPromptChange: (variant: PromptVariant) => void;
   onEvaluate: () => void;
   evaluating: boolean;
+  blocked?: boolean;
 }) {
   const council = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -73,7 +75,7 @@ export function CouncilStatus({
         <select
           id="review-prompt"
           value={promptVariant}
-          disabled={busy || evaluating}
+          disabled={busy || evaluating || blocked}
           onChange={(event) =>
             onPromptChange(event.target.value as PromptVariant)
           }
@@ -118,7 +120,7 @@ export function CouncilStatus({
         </details>
         <button
           className="quiet-button validation-trigger"
-          disabled={busy}
+          disabled={busy || blocked}
           onClick={onEvaluate}
         >
           <Icon name="scan" size={14} />

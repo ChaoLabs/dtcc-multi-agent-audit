@@ -35,8 +35,9 @@ export function EvaluationPanel({
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<EvaluationReport | null>(null);
   const [error, setError] = useState("");
+  const [includeSecondReview, setIncludeSecondReview] = useState(false);
   const [history, setHistory] = useState<
-    Partial<Record<PromptVariant, EvaluationReport>>
+    Partial<Record<string, EvaluationReport>>
   >({});
   const mounted = useRef(true);
   useEffect(() => {
@@ -63,6 +64,7 @@ export function EvaluationPanel({
       const result = await runEvaluation({
         apiKey: getApiKey(),
         promptVariant,
+        includeSecondReview,
         signal: abort.signal,
         onProgress: (snapshot) => {
           if (mounted.current && requestRef.current === abort)
@@ -74,7 +76,7 @@ export function EvaluationPanel({
         if (result.status === "completed") {
           setHistory((previous) => ({
             ...previous,
-            [result.prompt_variant]: result,
+            [`${result.prompt_variant}:${result.review_mode}`]: result,
           }));
         }
       }
@@ -92,8 +94,11 @@ export function EvaluationPanel({
     }
   }
 
-  const baseline = history.baseline;
-  const guided = history["few-shot"];
+  const comparisonMode = includeSecondReview
+    ? "paired-second-review"
+    : "independent";
+  const baseline = history[`baseline:${comparisonMode}`];
+  const guided = history[`few-shot:${comparisonMode}`];
   return (
     <dialog
       ref={dialogRef}
@@ -134,15 +139,31 @@ export function EvaluationPanel({
             <option value="few-shot">Guided examples</option>
           </select>
         </div>
+        <label className="validation-second-toggle">
+          <input
+            type="checkbox"
+            checked={includeSecondReview}
+            disabled={busy || analysisBusy}
+            onChange={(event) => setIncludeSecondReview(event.target.checked)}
+          />
+          <span>
+            <strong>Include second review</strong>
+            <small>
+              Pair each independent result with one review of disputed findings.
+            </small>
+          </span>
+        </label>
         <div className="validation-budget">
           <span>
             <strong>5</strong> fixed contracts
           </span>
           <span>
-            <strong>15–30</strong> model calls for a full run
+            <strong>{includeSecondReview ? "60 max" : "15–30"}</strong> model
+            calls for a full run
           </span>
           <span>
-            <strong>20 min</strong> maximum batch time
+            <strong>{includeSecondReview ? "40 min" : "20 min"}</strong> maximum
+            batch time
           </span>
         </div>
         <p className="validation-explanation">
@@ -150,6 +171,8 @@ export function EvaluationPanel({
           models. Run each setting separately to compare execution reliability
           and candidate findings. Accuracy still requires human assessment. AWS
           usage is billed to the connected account.
+          {includeSecondReview &&
+            " The second round preserves the exact first-pass report and records opinion changes separately. Cases without eligible disagreements make no second-round model calls."}
         </p>
         <ol className="validation-cases" aria-label="Validation cases">
           {EVALUATION_CASES.map((item, index) => {
@@ -167,6 +190,22 @@ export function EvaluationPanel({
                       ? `${outcome.report.models.filter((model) => model.status === "succeeded").length} / 3 reviews · ${outcome.report.findings.length} candidates · ${(outcome.elapsed_ms / 1000).toFixed(1)}s`
                       : (outcome?.error ?? item.filename)}
                   </span>
+                  {outcome &&
+                    outcome.second_review_status &&
+                    outcome.second_review_status !== "not_requested" && (
+                      <span>
+                        Second review ·{" "}
+                        {outcome.second_review_status === "pending"
+                          ? "not run"
+                          : outcome.second_review_status}
+                        {outcome.second_review
+                          ? ` · ${outcome.second_review.models.filter((model) => model.status === "succeeded").length} / ${outcome.second_review.plan.model_ids.length} reviews`
+                          : ""}
+                      </span>
+                    )}
+                  {outcome?.second_review_error && (
+                    <span>{outcome.second_review_error}</span>
+                  )}
                 </div>
                 <span className="validation-case-state">
                   {state === "running" && <span className="spinner" />}
@@ -180,7 +219,7 @@ export function EvaluationPanel({
           {busy
             ? `${promptLabel(promptVariant)} · ${report?.metrics.completed_cases ?? 0} / 5 cases with results · validation in progress`
             : report
-              ? `${promptLabel(report.prompt_variant)} · ${report.metrics.completed_cases} / 5 cases with results · ${report.status}`
+              ? `${promptLabel(report.prompt_variant)} · ${report.review_mode === "paired-second-review" ? "Paired second review" : "Independent review"} · ${report.metrics.completed_cases} / 5 cases with results · ${report.status}`
               : "Ready · no AWS requests have been made by this validation run"}
         </div>
         {report && (
@@ -206,6 +245,47 @@ export function EvaluationPanel({
             </div>
           </div>
         )}
+        {report?.review_mode === "paired-second-review" && (
+          <section
+            className="validation-paired-results"
+            aria-label="Paired review comparison"
+          >
+            <h3>Second-round outcomes</h3>
+            <div className="validation-metrics">
+              <div>
+                <strong>
+                  {report.metrics.second_review.successful_model_reviews} /{" "}
+                  {report.metrics.second_review.planned_model_reviews}
+                </strong>
+                <span>Peer-informed model reviews</span>
+              </div>
+              <div>
+                <strong>{report.metrics.second_review.new_supports}</strong>
+                <span>New supporting assessments</span>
+              </div>
+              <div>
+                <strong>
+                  {report.metrics.second_review.withdrawn_supports}
+                </strong>
+                <span>Withdrawn supporting assessments</span>
+              </div>
+              <div>
+                <strong>
+                  {report.metrics.second_review.unresolved_candidates}
+                </strong>
+                <span>Unresolved disagreements</span>
+              </div>
+            </div>
+            <p>
+              {report.metrics.second_review.observed_attempts} second-round
+              attempts · {report.metrics.second_review.skipped_cases} skipped
+              cases · {report.metrics.second_review.failed_cases} failed cases ·{" "}
+              {report.metrics.second_review.deferred_candidates} deferred
+              candidates. Opinion changes do not measure accuracy; original
+              agreement stays unchanged.
+            </p>
+          </section>
+        )}
         {baseline && guided && (
           <section
             className="validation-comparison"
@@ -219,6 +299,7 @@ export function EvaluationPanel({
                   <th>Reviews</th>
                   <th>Attempts</th>
                   <th>Candidates</th>
+                  {includeSecondReview && <th>Peer reviews</th>}
                 </tr>
               </thead>
               <tbody>
@@ -228,14 +309,20 @@ export function EvaluationPanel({
                     <td>{item.metrics.successful_model_reviews} / 15</td>
                     <td>{item.metrics.observed_attempts}</td>
                     <td>{item.metrics.findings}</td>
+                    {includeSecondReview && (
+                      <td>
+                        {item.metrics.second_review.successful_model_reviews} /{" "}
+                        {item.metrics.second_review.planned_model_reviews}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
             </table>
             <p>
-              Most recent completed run per setting, held in this tab. More
-              candidates do not imply higher accuracy. Download each run for
-              evidence-level review.
+              Most recent completed run per setting in the same review mode,
+              held in this tab. More candidates do not imply higher accuracy.
+              Download each run for evidence-level review.
             </p>
           </section>
         )}

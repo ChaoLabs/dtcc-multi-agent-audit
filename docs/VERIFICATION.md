@@ -1,5 +1,42 @@
 # Verification records
 
+## Documentation access and undated PDF resources
+
+Date: 2026-10-27. Included in the same unapplied second-review installer, based on merged PR #19.
+
+- Added the same-site `/documentation` page with separate reading and download controls for the eight-page platform overview and three-page orchestration design brief. Stable filenames and visible document content contain no release dates. The PDFs link to each other and the document page.
+- **6 desktop/mobile browser checks passed**: resource navigation, exact published and downloaded PDF bytes, download filenames, viewport layout, guide navigation and retention of the workspace's memory-only key when documentation opens in a new tab.
+- Production build, TypeScript, ESLint, formatting and patch whitespace checks passed. The new page is prerendered; no additional API or authoring dependency is required at runtime.
+- Both changed PDF pages were rendered and visually inspected; all earlier page text remains unchanged. Eight/three page counts, bookmarks, crosslinks and byte-identical regeneration were verified. Desktop/mobile document-page screenshots were inspected.
+- Core analysis, model transport, report validation and evaluation implementation remain byte-for-byte unchanged from the previously tested second-review package. The rebuilt full installer passed preflight, conflict protection, backups, exact application and idempotence checks again.
+
+## Bounded second review and paired evaluation
+
+Date: 2026-10-27. Reviewed base: `a69b4e645712558522abc383e569cb92274ff272` (main after merged PR #19). No live Bedrock calls were made for these checks.
+
+| Check | Result |
+| --- | --- |
+| Python unit/API/artifact suite | **102 passed** |
+| TypeScript transport, orchestration, client and evaluation tests | **264 passed** |
+| Desktop/mobile workspace and static checks | **78 passed**: 60 retained checks and 18 new second-review/paired-evaluation checks |
+| Final production-route checks | **4 passed**: first- and second-review routes under both browser projects, without contacting AWS |
+| Final UI review | Eight desktop/mobile screenshots inspected; focused final-build checks also passed |
+| ESLint, TypeScript, Prettier and Ruff | Passed |
+| Generated schema/types and five-case drift | Passed; reference sources unchanged |
+| Next.js production build | Passed; includes `/api/reviews` and `/api/reviews/second-round` |
+| Platform and orchestration PDFs | Eight-page overview and three-page design brief visually inspected; deterministic regeneration, links and bookmarks verified |
+| Self-contained patch installer | Read-only preflight; conflict, untracked-collision and symlink refusal before writes; exact installed bytes/modes; original-file backups; preservation of unrelated edits; idempotent reapplication |
+
+Synthetic transport tests cover finite attempts and deadlines, bounded Retry-After handling, cancellation during calls and backoff, partial-model retention, strict candidate/evidence validation, stable native output grammar, untrusted peer context and credential-echo rejection before and after JSON decoding. They establish application behavior with simulated upstream responses, not live model availability or valid account access.
+
+Second-review checks verify that the full first-pass snapshot is content-bound, its original reports and agreement never change, and missing reviewers, uncertainty, severity differences and deferred claims remain unresolved. A model can withdraw its own initial claim. A completed second pass is not automatically a resolved or correct finding. Fewer than two successful first-pass reviewers takes precedence over an empty review queue.
+
+Paired evaluation tests use the exact accepted first-pass report for each of the same five contracts. They verify sequential execution, explicit opt-in, no outer retry, separate round outcomes and metrics, access/rate-limit early stops, cancellation preserving completed records, unresolved counts after failed second reviews, and skipped second reviews after first-pass failure. The browser checks exercise exactly five first-pass and five second-pass requests with synthetic results and credential-free exports.
+
+Runtime: Python 3.12.14, Node 24.22.1, Playwright 1.58.2 and test-only Chromium 153.0.8010.0 on Linux. Mobile checks emulate a viewport; they are not native iOS/Safari tests. Existing Starlette/httpx and AnyIO deprecation warnings remain. No dependencies were changed by this release.
+
+**Not established:** real Bedrock second-review behavior, live DTCC permissions or quotas, a production Vercel deployment, calibrated confidence, exploitability, reduced false negatives or improved accuracy. Those require authorized live paired runs and independent human review. Per-instance request guards are not a distributed quota, and a content fingerprint is not provider authentication. No credential from the conversation was used; no GitHub push, merge or remote deployment was performed.
+
 ## Bounded orchestration and controlled evaluation
 
 Date: 2026-10-23. Reviewed base: `0f26c3af418871e6baaa1beca02583f23cb3b201` (main after PR #18). No live Bedrock calls were made for these checks.

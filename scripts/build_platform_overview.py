@@ -1,4 +1,4 @@
-"""Build the seven-page platform brief (authoring dependency: reportlab 4.4.9).
+"""Build the eight-page platform brief (authoring dependency: reportlab 4.4.9).
 
 Run from any directory: python scripts/build_platform_overview.py
 The generated PDF is committed so normal web builds need no PDF dependencies.
@@ -20,7 +20,7 @@ OUT = ROOT / "apps/web/public/docs/DTCC_Platform_Overview.pdf"
 W, H = 900, 600
 M = 44
 WIDTH = W - 2 * M
-PAGES = 7
+PAGES = 8
 GREEN = colors.HexColor("#063E31")
 INK = colors.HexColor("#19382D")
 MUTED = colors.HexColor("#5A6D63")
@@ -253,7 +253,7 @@ for i, (kicker, title, body, detail) in enumerate(
             "API ANALYSIS",
             "Compare independent reviews",
             "Three parallel model reviews, using one Bedrock key:<br/>GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7.",
-            "Each model independently reviews the same source. The application validates evidence and reconciles compatible findings.",
+            "The first pass reviews the source independently. An optional second review reconsiders selected claims with peer context.",
         ),
     ]
 ):
@@ -301,7 +301,7 @@ c.showPage()
 # 3. The actual source fan-out and deterministic application orchestrator.
 header(
     3,
-    "Multi-model orchestration",
+    "Independent first pass",
     "Independent reviews. Explicit orchestration.",
     "Three independent model tasks share bounded execution and one deterministic reconciliation process.",
 )
@@ -364,7 +364,7 @@ for i, (title, body) in enumerate(
     text(title, x, 432, model_w, 12, GREEN, True, 17)
     text(body, x, 458, model_w, 10.5, MUTED, leading=15)
 text(
-    "Static findings and peer answers are excluded from model prompts. Orchestration uses application logic, with no fourth model.",
+    "First-pass prompts exclude static findings and peer answers. The optional second review is a separate, peer-informed stage.",
     M,
     536,
     WIDTH,
@@ -424,7 +424,7 @@ text(
 )
 label("SEVERITY & DIFFERENCES", rx, 353, col, GREEN)
 text(
-    "The highest proposed severity is displayed. Severity differences and incomplete model support identify findings to compare. Missing findings are not explicit rebuttals; original contributions remain available.",
+    "The highest proposed severity is displayed. Severity differences and incomplete support identify claims to compare. First-pass agreement remains unchanged after any peer-informed second review.",
     rx,
     375,
     col,
@@ -463,9 +463,86 @@ text(
 )
 c.showPage()
 
-# 5. Representative static coverage and the exported evidence record.
+# 5. A peer-informed second review preserves independent first-pass evidence.
 header(
     5,
+    "Peer-informed second review",
+    "Reconsider claims. Preserve the baseline.",
+    "One optional round revisits selected queued claims; its decisions stay separate from independent agreement.",
+)
+text(
+    "Successful first-pass reviewers inspect the same source and selected peer claims, including their own. Each returns support, rejection or uncertainty with rationale and exact source evidence.",
+    M,
+    174,
+    WIDTH,
+    12,
+    MUTED,
+    leading=17,
+)
+card_w = (WIDTH - 32) / 3
+for i, (value, title, detail) in enumerate(
+    [
+        ("12 claims", "DETERMINISTIC SELECTION", "Remaining queue entries are deferred."),
+        (
+            "2+ reviewers",
+            "FIRST-PASS ELIGIBILITY",
+            "Only successful first-pass models participate.",
+        ),
+        ("1 round", "EXPLICIT SECOND REVIEW", "At most six additional provider requests."),
+    ]
+):
+    x = M + i * (card_w + 16)
+    box(x, 226, card_w, 84, PALE)
+    text(value, x + 15, 239, card_w - 30, 21, GREEN, True, 26)
+    label(title, x + 15, 273, card_w - 30, GREEN)
+    text(detail, x + 15, 291, card_w - 30, 8.8, MUTED, leading=12)
+table(
+    332,
+    ["Second-pass observation", "Peer-informed summary", "Meaning for the reviewer"],
+    [
+        [
+            "All three support; same proposed severity",
+            "Supported",
+            "A shared position to inspect, not proof of exploitability",
+        ],
+        [
+            "All three explicitly reject the claim",
+            "Not supported",
+            "A reconsidered claim, not a certified false positive",
+        ],
+        [
+            "Mixed, uncertain, missing or deferred",
+            "Unresolved",
+            "Retain differences and incomplete coverage for human review",
+        ],
+    ],
+    [287, 176, 349],
+    [48, 48, 48],
+)
+text(
+    "Original authors may withdraw claims. Two agreeing reviewers with a missing third still leave the claim unresolved.",
+    M,
+    518,
+    WIDTH,
+    10,
+    GREEN,
+    True,
+    14,
+)
+text(
+    "This stage reconsiders existing selected claims. It does not discover issues missed by every first-pass model or add independent votes.",
+    M,
+    541,
+    WIDTH,
+    8.5,
+    MUTED,
+    leading=10,
+)
+c.showPage()
+
+# 6. Representative static coverage and the exported evidence record.
+header(
+    6,
     "Risk coverage & reporting",
     "Connect risk findings to an audit trail.",
     "Review recognizable source patterns, then retain the evidence and model context behind each result.",
@@ -508,7 +585,7 @@ for i, (title, body) in enumerate(
         ("Source", "Filename and SHA-256 identify the analyzed source snapshot."),
         (
             "Run",
-            "Timestamp, source identity, prompt variant/version, execution limits and overall review status.",
+            "Source identity, prompt settings, execution limits and separate first/second-pass records.",
         ),
         (
             "Models",
@@ -523,7 +600,7 @@ for i, (title, body) in enumerate(
 label("EXPORT FOR FOLLOW-UP", rx, 391, col, GREEN)
 text("JSON", rx, 414, 76, 11, GREEN, True)
 text(
-    "Static report, consolidated findings, validated model reviews and execution provenance.",
+    "Static and first-pass records, validated reviews, optional second-pass decisions and provenance.",
     rx + 88,
     414,
     col - 88,
@@ -533,7 +610,7 @@ text(
 )
 text("Markdown", rx, 474, 76, 11, GREEN, True)
 text(
-    "Readable findings, attempts, contribution details and an independent static baseline.",
+    "Readable findings, attempts and contributions, with before/after decisions when a second review exists.",
     rx + 88,
     474,
     col - 88,
@@ -552,9 +629,9 @@ text(
 )
 c.showPage()
 
-# 6. Bounded model execution and an explicit five-case prompt comparison.
+# 7. Bounded model execution and an explicit five-case prompt comparison.
 header(
-    6,
+    7,
     "Execution & evaluation",
     "Bounded execution. Controlled evaluation.",
     "Inspect operational reliability on the same five contracts before drawing conclusions about detection quality.",
@@ -562,16 +639,20 @@ header(
 card_w = (WIDTH - 32) / 3
 for i, (value, title, detail) in enumerate(
     [
-        ("2 attempts", "PER MODEL, MAXIMUM", "One initial call plus one eligible transient retry."),
         (
-            "180 seconds",
-            "PER MODEL, ABSOLUTE",
-            "210 seconds for the server run. Retry time is included.",
+            "2 attempts",
+            "PER MODEL / PASS, MAXIMUM",
+            "One initial call plus one eligible transient retry.",
         ),
         (
-            "30 calls",
-            "PER FIVE-CASE VARIANT, MAXIMUM",
-            "Five sequential analyses; at most six provider calls each.",
+            "180 seconds",
+            "PER MODEL / PASS, ABSOLUTE",
+            "210 seconds per server request. Retry time is included.",
+        ),
+        (
+            "60 calls",
+            "FIVE CASES WITH BOTH PASSES, MAXIMUM",
+            "First pass only: 30 calls. Second review is optional.",
         ),
     ]
 ):
@@ -582,7 +663,7 @@ for i, (value, title, detail) in enumerate(
     text(detail, x + 15, 244, card_w - 30, 9.5, MUTED, leading=13)
 col = (WIDTH - 30) / 2
 rx = M + col + 30
-label("CONTROLLED PROMPT COMPARISON", M, 299, col, GREEN)
+label("FIRST-PASS PROMPT COMPARISON", M, 299, col, GREEN)
 text("Standard prompt", M, 324, col, 12, GREEN, True, 17)
 text(
     "Shared review instructions and output schema provide the baseline for all three models.",
@@ -608,15 +689,15 @@ for i, (title, body) in enumerate(
     [
         (
             "01  Fix the conditions",
-            "Choose one prompt variant. Keep the five source files and three model identities unchanged.",
+            "Choose a prompt variant and whether to include second review. Keep the five sources unchanged.",
         ),
         (
             "02  Run sequentially",
-            "Inspect progress or cancel. Completed case records remain available; no new cases start after cancellation.",
+            "Pair each second review with its own first-pass report. Cancel to stop new work and keep completed records.",
         ),
         (
             "03  Export and compare",
-            "Retain completion, attempts, latency, usage and differences. Start the other variant as a separate run.",
+            "Retain execution and before/after decisions. Human-reviewed labels are needed to assess quality.",
         ),
     ]
 ):
@@ -654,9 +735,9 @@ text(
 )
 c.showPage()
 
-# 7. Practical browser connection, outcome interpretation and useful destinations.
+# 8. Practical browser connection, outcome interpretation and useful destinations.
 header(
-    7,
+    8,
     "Connection & use",
     "Connect, review and share from your browser.",
     "Use a valid Amazon Bedrock key with access to the three configured models in US East (N. Virginia).",
@@ -688,7 +769,7 @@ for i, (title, body) in enumerate(
     label(f"0{i + 1}", M, y + 2, 27, GREEN)
     text(title, M + 35, y, col - 35, 11.5, GREEN, True, 16)
     text(body, M + 35, y + 20, col - 35, 10, MUTED, leading=14)
-label("INTERPRET MODEL COVERAGE", rx, 176, col, GREEN)
+label("FIRST-PASS MODEL COVERAGE", rx, 176, col, GREEN)
 for i, (status, detail) in enumerate(
     [
         ("Completed", "3 / 3 models returned validated reviews."),
@@ -730,14 +811,14 @@ for i, (title, display, url) in enumerate(
             "https://dtcc-multi-agent-audit.vercel.app/",
         ),
         (
-            "SOURCE & LOCAL SETUP",
-            "github.com/ChaoLabs/<br/>dtcc-multi-agent-audit",
-            "https://github.com/ChaoLabs/dtcc-multi-agent-audit",
+            "ORCHESTRATION DESIGN",
+            "Independent review, reconsideration<br/>and evaluation - three-page brief",
+            "https://dtcc-multi-agent-audit.vercel.app/docs/DTCC_Orchestration_Design.pdf",
         ),
         (
-            "CONNECTION & ANALYSIS GUIDE",
-            "dtcc-multi-agent-audit.vercel.app/<br/>guide",
-            "https://dtcc-multi-agent-audit.vercel.app/guide",
+            "DOCUMENTATION",
+            "Read and download both<br/>platform documents",
+            "https://dtcc-multi-agent-audit.vercel.app/documentation",
         ),
     ]
 ):
