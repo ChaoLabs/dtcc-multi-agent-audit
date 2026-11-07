@@ -19,9 +19,9 @@ import {
 import {
   bedrockOutputConfig,
   bindReviewContentToSource,
-  normalizeReviewContent,
   reviewContentSchema,
   reviewFormatInstructions,
+  ReviewSourceValidationError,
   schemaFailureDetail,
   type IncomingReviewContent,
 } from "./review-format";
@@ -36,9 +36,17 @@ safety. Do not invent imports, external code, line numbers or exact excerpts.
 Return one JSON object only, with summary (string) and findings (array, at most 24).
 Each finding must have exactly: title, category, proposed_severity (HIGH/MEDIUM/LOW),
 rationale, recommendation, evidence. evidence must have line_start, line_end (1-based,
-inclusive, at most 12 lines), excerpt (the EXACT original source lines joined by newline).
+inclusive, at most 12 lines). The application retrieves the exact source text for those
+model-selected lines; do not return an excerpt.
 Do not add validation metadata; the server verifies the evidence against the source.
-Use concise English. An empty findings array is valid.
+Write for a risk reviewer who may not know Solidity or blockchain. Use a clear,
+plain-English title describing the risk. In rationale, explain who or what could be
+affected, the potential consequence, and the conditions required; distinguish observed
+code behavior from impact that depends on missing context. Explain any essential
+technical term briefly rather than relying on jargon. In recommendation, give a
+specific corrective action and, when relevant, what a reviewer should verify.
+Keep statements concise, evidence-grounded and qualified; never invent financial
+loss, exploitability, business intent or affected users. An empty findings array is valid.
 Use a category from: ${CATEGORIES.join(", ")}. Select the most specific root cause.
 For each finding, cite the smallest useful evidence span containing the exact vulnerable
 operation, not an entire function header. For missing access control cite the unguarded
@@ -73,13 +81,18 @@ async function runModelReview(
   signal: AbortSignal,
   transport: typeof fetch,
   promptVariant: PromptVariant,
+  correction: string,
+  invalidResponse: (
+    code: "invalid_report" | "invalid_evidence",
+    detail: string,
+  ) => RequestError,
 ) {
   const response = await invokeBedrockJson({
     model,
     key,
     signal,
     transport,
-    system: `${SYSTEM}\n\n${reviewFormatInstructions}\n\n${promptInstructions(promptVariant)}`,
+    system: `${SYSTEM}\n\n${reviewFormatInstructions}\nSource line numbers run from 1 through ${sourceLines(source).length}.\n\n${promptInstructions(promptVariant)}${correction ? `\n\n${correction}` : ""}`,
     context: {
       source_lines: sourceLines(source).map((text, i) => ({
         line: i + 1,
@@ -88,40 +101,52 @@ async function runModelReview(
     },
     outputConfig: bedrockOutputConfig,
   });
-  let content: unknown = response.content;
-  // Credential checks precede removal of legacy model-supplied metadata.
-  content = normalizeReviewContent(content);
+  const content: unknown = response.content;
   if (!validContent(content))
-    throw new RequestError(
-      `${model.label} report format was rejected: ${schemaFailureDetail(validContent.errors)} Static results remain available.`,
-      502,
+    throw invalidResponse(
       "invalid_report",
+      schemaFailureDetail(validContent.errors),
     );
 
+  let groundedContent;
   try {
-    const groundedContent = bindReviewContentToSource(content, source);
-    return await validateModelReview(
-      {
-        ...groundedContent,
-        provider: "aws-bedrock",
-        model_id: model.id,
-        region: BEDROCK.region,
-        protocol: BEDROCK.protocol,
-        source_sha256: sourceHash,
-        created_at: new Date().toISOString(),
-        elapsed_ms: response.elapsed_ms,
-        input_tokens: response.input_tokens,
-        output_tokens: response.output_tokens,
-      },
-      source,
-    );
-  } catch {
-    throw new RequestError(
-      `${model.label} evidence does not match the source. The model review was rejected.`,
-      502,
-      "invalid_evidence",
-    );
+    groundedContent = bindReviewContentToSource(content, source);
+  } catch (error) {
+    if (error instanceof ReviewSourceValidationError)
+      throw invalidResponse("invalid_evidence", error.message);
+    throw error;
   }
+  // Metadata and final source binding are server-owned. Unexpected failures here
+  // are not model-correctable and must not grant another provider request.
+  return await validateModelReview(
+    {
+      ...groundedContent,
+      provider: "aws-bedrock",
+      model_id: model.id,
+      region: BEDROCK.region,
+      protocol: BEDROCK.protocol,
+      source_sha256: sourceHash,
+      created_at: new Date().toISOString(),
+      elapsed_ms: response.elapsed_ms,
+      input_tokens: response.input_tokens,
+      output_tokens: response.output_tokens,
+    },
+    source,
+  );
+}
+
+/** Retry guidance contains trusted rules only, never rejected output or peer findings. */
+function correctionInstructions(detail: string, lineCount: number) {
+  return `SERVER VALIDATION FEEDBACK
+The previous response failed local validation. None of its findings were accepted.
+Validation rule: ${detail}
+Independently analyze the same source_lines again and return a fresh, complete response.
+Do not patch or quote the rejected response. No other model's findings are available.
+Return summary and findings, with all required fields and no extra fields. Preserve any warranted uncertainty.
+For each finding use integer line_start and line_end between 1 and ${lineCount}, with line_end >= line_start and line_end - line_start + 1 <= 12.
+Select relevant, non-empty source text of at most 12000 characters. Do not return excerpt, validation, confidence or model metadata.
+Do not invent source lines or silently drop a supported finding to force acceptance. Do not repeat the same finding at the same source span.
+All original schema and evidence constraints still apply. Return only the complete JSON object.`;
 }
 
 export async function handleReview(
@@ -223,11 +248,27 @@ export async function handleReview(
     release = limiter(key);
     const started = performance.now();
     const sourceHash = createHash("sha256").update(source).digest("hex");
-    // The supervisor bounds each model across ALL attempts. Completed reviews are
-    // retained; only explicit transient HTTP failures receive one bounded retry.
+    // Each model has an isolated correction state. The supervisor shares one
+    // finite attempt/deadline budget across transport and validation recovery.
     const models: ModelRun[] = await Promise.all(
-      BEDROCK_MODELS.map((model) =>
-        runBoundedModel({
+      BEDROCK_MODELS.map((model) => {
+        let correction = "";
+        const invalidResponse = (
+          code: "invalid_report" | "invalid_evidence",
+          detail: string,
+        ) => {
+          correction = correctionInstructions(
+            detail,
+            sourceLines(source).length,
+          );
+          return new RequestError(
+            `${model.label} ${code === "invalid_report" ? "report format was rejected" : "evidence does not match the source"}: ${detail} Static results remain available.`,
+            502,
+            code,
+            true,
+          );
+        };
+        return runBoundedModel({
           model,
           signal,
           overallDeadline,
@@ -241,9 +282,11 @@ export async function handleReview(
               modelSignal,
               transport,
               promptVariant,
+              correction,
+              invalidResponse,
             ),
-        }),
-      ),
+        });
+      }),
     );
     // A user cancellation stops the request. An internal deadline still returns
     // completed reviews, with timed-out model outcomes explicit in the report.

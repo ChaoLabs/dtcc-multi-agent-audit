@@ -1,15 +1,41 @@
 /** Public, versioned execution limits; never credentials or provider overrides. */
-export const POLICY_VERSION = "bounded-review-v1" as const;
-export const PROMPT_VERSION = "independent-review-v2" as const;
+export const POLICY_VERSION = "bounded-review-v3-validation-recovery" as const;
+export const PROMPT_VERSION =
+  "independent-review-v5-bounded-evidence-correction-grok-medium" as const;
+export type IndependentPromptVersion =
+  | typeof PROMPT_VERSION
+  | "independent-review-v4-reader-focused-source-spans-grok-medium"
+  | "independent-review-v3-source-spans-grok-medium"
+  | "independent-review-v2";
 export type PromptVariant = "baseline" | "few-shot";
 
-export const REVIEW_POLICY = Object.freeze({
+export const LEGACY_REVIEW_POLICY = Object.freeze({
   max_attempts_per_model: 2,
   model_timeout_ms: 180_000,
   overall_timeout_ms: 210_000,
   max_output_tokens: 8192,
   max_provider_requests: 6,
 } as const);
+
+export const REVIEW_POLICY = Object.freeze({
+  ...LEGACY_REVIEW_POLICY,
+  max_attempts_per_model: 3,
+  model_timeout_ms: 270_000,
+  overall_timeout_ms: 285_000,
+  max_provider_requests: 9,
+} as const);
+
+export const REVIEW_CLIENT_TIMEOUT_MS = 295_000;
+
+export type ReviewPolicyVersion =
+  | typeof POLICY_VERSION
+  | "bounded-review-v2-network-recovery"
+  | "bounded-review-v1";
+
+/** Historical records keep the execution budget that governed their requests. */
+export function reviewPolicyLimits(version: ReviewPolicyVersion) {
+  return version === POLICY_VERSION ? REVIEW_POLICY : LEGACY_REVIEW_POLICY;
+}
 
 // Separately authored microexamples. Never import the five regression cases or
 // their expected rules into this prompt. Same examples/order for all reviewers.
@@ -36,8 +62,6 @@ const demonstrations = [
           evidence: {
             line_start: 4,
             line_end: 4,
-            excerpt:
-              "    function setFee(uint256 next) external { feeBps = next; }",
           },
         },
       ],

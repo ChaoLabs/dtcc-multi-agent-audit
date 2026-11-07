@@ -16,11 +16,11 @@ const documents = [
     pages: 8,
     filename: "DTCC_Platform_Overview.pdf",
     description:
-      "The platform's background, capabilities and workflow, from source review to evidence-based reporting.",
+      "Static analysis, independent Bedrock review, second-round judgments and the final evidence report.",
     topics: [
-      "Static and multi-model analysis",
-      "Findings, source evidence and reports",
-      "Second review and five-contract evaluation",
+      "Static Analysis and Bedrock Review",
+      "First-round findings and Final Report",
+      "Second Review and human evaluation",
     ],
   },
   {
@@ -29,11 +29,11 @@ const documents = [
     pages: 3,
     filename: "DTCC_Orchestration_Design.pdf",
     description:
-      "How independent model reviews become a traceable assessment, with a bounded second review of disputed findings.",
+      "How independent findings and an explicitly initiated Second Review form a traceable final report.",
     topics: [
       "Independent reviews and disagreement handling",
-      "Peer evidence and second-round decisions",
-      "Retry limits, resource controls and evaluation",
+      "Targeted assignments and typed decisions",
+      "Retry limits, filtering outcomes and evaluation",
     ],
   },
 ] as const;

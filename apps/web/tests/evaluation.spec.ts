@@ -4,11 +4,14 @@ import { BEDROCK, BEDROCK_MODELS } from "../src/lib/bedrock-config";
 import {
   EVALUATION_CASES,
   runEvaluation,
+  importEvaluationJSON,
   type EvaluationReport,
 } from "../src/lib/evaluation";
 import { buildCouncilReport, type ModelRun } from "../src/lib/orchestration";
 import {
   POLICY_VERSION,
+  REVIEW_POLICY,
+  LEGACY_REVIEW_POLICY,
   PROMPT_VERSION,
   promptInstructions,
   type PromptVariant,
@@ -18,7 +21,17 @@ import {
   syntheticBaseline,
   syntheticSecondReview,
 } from "./second-review-fixtures";
-import { buildSecondReviewReport } from "../src/lib/second-review";
+import {
+  buildSecondReviewReport,
+  SECOND_REVIEW_POLICY_VERSION,
+  SECOND_REVIEW_PROMPT_VERSION,
+} from "../src/lib/second-review";
+
+const legacyLimits = {
+  max_attempts_per_model: LEGACY_REVIEW_POLICY.max_attempts_per_model,
+  model_timeout_ms: LEGACY_REVIEW_POLICY.model_timeout_ms,
+  overall_timeout_ms: LEGACY_REVIEW_POLICY.overall_timeout_ms,
+};
 
 const key = "bedrock-api-key-SYNTHETIC_EVALUATION_ONLY";
 async function review(
@@ -77,9 +90,9 @@ async function review(
           policy_version: POLICY_VERSION,
           prompt_variant: variant,
           prompt_version: PROMPT_VERSION,
-          max_attempts_per_model: 2,
-          model_timeout_ms: 180_000,
-          overall_timeout_ms: 210_000,
+          max_attempts_per_model: REVIEW_POLICY.max_attempts_per_model,
+          model_timeout_ms: REVIEW_POLICY.model_timeout_ms,
+          overall_timeout_ms: REVIEW_POLICY.overall_timeout_ms,
           total_attempts: 3,
         },
   );
@@ -450,8 +463,8 @@ test("paired evaluation preserves exact independent results and makes only one s
   expect(result.review_mode).toBe("paired-second-review");
   expect(result.metrics.observed_attempts).toBe(15);
   expect(result.metrics.second_review).toMatchObject({
-    successful_model_reviews: 15,
-    observed_attempts: 15,
+    successful_model_reviews: 10,
+    observed_attempts: 10,
     new_supports: 10,
     withdrawn_supports: 0,
     unresolved_candidates: 0,
@@ -465,7 +478,7 @@ test("paired evaluation preserves exact independent results and makes only one s
   expect(JSON.stringify(result)).not.toContain(key);
 });
 
-test("paired evaluation records withdrawals and uncertainty without treating them as proven corrections", async () => {
+test("targeted evaluation records uncertainty without retracting unassigned first-round support", async () => {
   const result = await runEvaluation({
     ...options(async (url, init) => {
       const body = JSON.parse(String(init?.body));
@@ -483,7 +496,7 @@ test("paired evaluation records withdrawals and uncertainty without treating the
   });
   expect(result.metrics.second_review).toMatchObject({
     new_supports: 5,
-    withdrawn_supports: 5,
+    withdrawn_supports: 0,
     unresolved_candidates: 5,
   });
   expect(
@@ -609,7 +622,7 @@ test("access failure inside a partial second review retains all accepted records
       if (url === "/api/reviews")
         return Response.json(await syntheticBaseline(body.source));
       const second = await syntheticSecondReview(body.source, body.baseline);
-      const failed = second.models[2];
+      const failed = second.models[second.models.length - 1];
       failed.review = null;
       failed.status = "failed";
       failed.error = {
@@ -633,6 +646,181 @@ test("access failure inside a partial second review retains all accepted records
   expect(result.status).toBe("stopped");
   expect(result.cases[0].report?.status).toBe("completed");
   expect(result.cases[0].second_review?.status).toBe("partial");
-  expect(result.metrics.second_review.successful_model_reviews).toBe(2);
+  expect(result.metrics.second_review.successful_model_reviews).toBe(1);
   expect(result.metrics.second_review.unresolved_candidates).toBe(1);
+});
+
+test("evaluation imports preserve old prompt provenance and reject mixed prompt envelopes", async () => {
+  const report = await runEvaluation(
+    options(async (_, init) =>
+      Response.json(await review(requestInput(init).source)),
+    ),
+  );
+  const historical = structuredClone(report);
+  for (const prompt of [
+    "independent-review-v2",
+    "independent-review-v3-source-spans-grok-medium",
+  ] as const) {
+    historical.prompt_version = prompt;
+    for (const entry of historical.cases) {
+      entry.report!.execution!.prompt_version = prompt;
+      entry.report!.execution!.policy_version =
+        "bounded-review-v2-network-recovery";
+      Object.assign(entry.report!.execution!, legacyLimits);
+    }
+    expect(await importEvaluationJSON(JSON.stringify(historical))).toEqual(
+      historical,
+    );
+  }
+  historical.cases[0].report!.execution!.prompt_version = PROMPT_VERSION;
+  await expect(
+    importEvaluationJSON(JSON.stringify(historical)),
+  ).rejects.toThrow();
+});
+
+test("a live evaluation cannot relabel an older deployed prompt as the current experiment", async () => {
+  let calls = 0;
+  const result = await runEvaluation(
+    options(async (_, init) => {
+      calls++;
+      const historical = await review(requestInput(init).source);
+      historical.execution!.prompt_version =
+        "independent-review-v3-source-spans-grok-medium";
+      historical.execution!.policy_version =
+        "bounded-review-v2-network-recovery";
+      Object.assign(historical.execution!, legacyLimits);
+      return Response.json(historical);
+    }),
+  );
+  expect(calls).toBe(1);
+  expect(result.status).toBe("stopped");
+  expect(result.metrics.successful_model_reviews).toBe(0);
+});
+
+test("paired evaluation counts a validation correction as one extra call, never another model or vote", async () => {
+  const baselineRecords = new Map<string, unknown>();
+  const run = (correction: boolean) =>
+    runEvaluation({
+      ...options(async (url, init) => {
+        const body = JSON.parse(String(init?.body));
+        if (url === "/api/reviews") {
+          const first = await syntheticBaseline(body.source);
+          if (correction) baselineRecords.set(first.source_sha256, first);
+          return Response.json(first);
+        }
+        const second = await syntheticSecondReview(body.source, body.baseline);
+        if (!correction) return Response.json(second);
+        const corrected = second.models[0];
+        corrected.attempts.unshift({
+          attempt: 1,
+          status: "failed",
+          elapsed_ms: 8,
+          error_code: "invalid_evidence",
+          retry_delay_ms: 0,
+        });
+        corrected.attempts[1].attempt = 2;
+        corrected.elapsed_ms = 10;
+        return Response.json(
+          await buildSecondReviewReport(
+            second.models,
+            body.source,
+            body.baseline,
+            11,
+          ),
+        );
+      }),
+      includeSecondReview: true,
+    });
+  const clean = await run(false);
+  const corrected = await run(true);
+  expect(corrected.status).toBe("completed");
+  expect(corrected.metrics).toEqual({
+    ...clean.metrics,
+    second_review: {
+      ...clean.metrics.second_review,
+      observed_attempts: clean.metrics.second_review.observed_attempts + 5,
+    },
+  });
+  expect(corrected.metrics.second_review).toMatchObject({
+    completed_cases: 5,
+    successful_model_reviews: 10,
+    planned_model_reviews: 10,
+    observed_attempts: 15,
+    new_supports: 10,
+    withdrawn_supports: 0,
+  });
+  for (const [index, entry] of corrected.cases.entries()) {
+    expect(entry.report).toEqual(baselineRecords.get(entry.source_sha256));
+    expect(entry.report?.findings[0].agreement).toBe(1);
+    expect(entry.second_review?.findings).toEqual(
+      clean.cases[index].second_review?.findings,
+    );
+    expect(
+      entry.second_review?.models[0].attempts.map(
+        (attempt) => attempt.error_code,
+      ),
+    ).toEqual(["invalid_evidence", null]);
+    expect(entry.second_review?.policy_version).toBe(
+      SECOND_REVIEW_POLICY_VERSION,
+    );
+    expect(entry.second_review?.prompt_version).toBe(
+      SECOND_REVIEW_PROMPT_VERSION,
+    );
+  }
+  expect(await importEvaluationJSON(JSON.stringify(corrected))).toEqual(
+    corrected,
+  );
+
+  const retagged = structuredClone(corrected);
+  for (const entry of retagged.cases) {
+    entry.second_review!.policy_version =
+      "targeted-peer-review-v3-network-recovery";
+    Object.assign(entry.second_review!.execution, legacyLimits);
+    entry.second_review!.prompt_version =
+      "targeted-peer-review-v6-stable-slots-grok-medium";
+  }
+  await expect(importEvaluationJSON(JSON.stringify(retagged))).rejects.toThrow(
+    "does not permit retrying",
+  );
+});
+
+test("paired historical imports retain their raw second-round policy and reject mixed correction envelopes", async () => {
+  const current = await runEvaluation({
+    ...options(async (url, init) => {
+      const body = JSON.parse(String(init?.body));
+      return Response.json(
+        url === "/api/reviews"
+          ? await syntheticBaseline(body.source)
+          : await syntheticSecondReview(body.source, body.baseline),
+      );
+    }),
+    includeSecondReview: true,
+  });
+  const historical = structuredClone(current);
+  for (const entry of historical.cases) {
+    entry.second_review!.policy_version =
+      "targeted-peer-review-v3-network-recovery";
+    Object.assign(entry.second_review!.execution, legacyLimits);
+    entry.second_review!.prompt_version =
+      "targeted-peer-review-v6-stable-slots-grok-medium";
+  }
+  const snapshot = structuredClone(historical);
+  expect(await importEvaluationJSON(JSON.stringify(historical))).toEqual(
+    snapshot,
+  );
+  expect(historical).toEqual(snapshot);
+  expect(historical.metrics).toEqual(current.metrics);
+
+  const promptRetag = structuredClone(historical);
+  promptRetag.cases[0].second_review!.prompt_version =
+    SECOND_REVIEW_PROMPT_VERSION;
+  await expect(
+    importEvaluationJSON(JSON.stringify(promptRetag)),
+  ).rejects.toThrow("Invalid second-review report");
+  const policyRetag = structuredClone(historical);
+  policyRetag.cases[0].second_review!.policy_version =
+    SECOND_REVIEW_POLICY_VERSION;
+  await expect(
+    importEvaluationJSON(JSON.stringify(policyRetag)),
+  ).rejects.toThrow("Invalid second-review report");
 });

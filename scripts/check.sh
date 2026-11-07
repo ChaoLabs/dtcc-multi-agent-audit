@@ -8,5 +8,6 @@ cd "$(dirname "$0")/.."
 npm --prefix apps/web run lint
 npm --prefix apps/web run typecheck
 npm --prefix apps/web run format:check
+npm --prefix apps/web run test:unit
 NEXT_TELEMETRY_DISABLED=1 npm --prefix apps/web run build
 echo "Offline checks and production build passed. Browser tests: cd apps/web && npm run test:e2e"

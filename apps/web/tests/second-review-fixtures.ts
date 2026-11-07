@@ -7,9 +7,11 @@ import {
 import {
   POLICY_VERSION,
   PROMPT_VERSION,
+  REVIEW_POLICY,
   type PromptVariant,
 } from "../src/lib/review-policy";
 import {
+  assignedSecondReviewCandidates,
   buildSecondReviewPlan,
   buildSecondReviewReport,
   type SecondReviewAssessment,
@@ -75,9 +77,9 @@ export async function syntheticBaseline(
     policy_version: POLICY_VERSION,
     prompt_version: PROMPT_VERSION,
     prompt_variant: variant,
-    max_attempts_per_model: 2,
-    model_timeout_ms: 180000,
-    overall_timeout_ms: 210000,
+    max_attempts_per_model: REVIEW_POLICY.max_attempts_per_model,
+    model_timeout_ms: REVIEW_POLICY.model_timeout_ms,
+    overall_timeout_ms: REVIEW_POLICY.overall_timeout_ms,
     total_attempts: 3,
   });
 }
@@ -92,7 +94,7 @@ export async function syntheticSecondReview(
   ],
 ) {
   const plan = buildSecondReviewPlan(baseline);
-  const models: SecondReviewModelRun[] = plan.model_ids.map((id, index) => {
+  const models: SecondReviewModelRun[] = plan.model_ids.map((id) => {
     const first = baseline.models.find((model) => model.model_id === id)!;
     const { findings: _, ...provenance } = first.review!;
     void _;
@@ -114,15 +116,23 @@ export async function syntheticSecondReview(
       review: {
         ...provenance,
         summary: "Synthetic second-review result; no AWS models were called.",
-        assessments: plan.candidate_ids.map((finding_id) => ({
-          finding_id,
-          verdict: verdicts[index],
-          proposed_severity: verdicts[index] === "supported" ? "LOW" : null,
-          rationale: "Synthetic assessment based on the supplied test source.",
-          evidence: baseline.findings.find(
-            (finding) => finding.id === finding_id,
-          )!.evidence,
-        })),
+        assessments: assignedSecondReviewCandidates(plan, id).map(
+          (finding_id) => ({
+            finding_id,
+            verdict:
+              verdicts[BEDROCK_MODELS.findIndex((model) => model.id === id)],
+            proposed_severity:
+              verdicts[BEDROCK_MODELS.findIndex((model) => model.id === id)] ===
+              "supported"
+                ? "LOW"
+                : null,
+            rationale:
+              "Synthetic assessment based on the supplied test source.",
+            evidence: baseline.findings.find(
+              (finding) => finding.id === finding_id,
+            )!.evidence,
+          }),
+        ),
       },
     };
   });

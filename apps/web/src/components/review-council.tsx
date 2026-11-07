@@ -1,23 +1,15 @@
 import { useEffect, useRef } from "react";
 import type { ConsensusFinding, CouncilReport } from "@/lib/orchestration";
+import {
+  firstReviewEvidenceMethod,
+  firstReviewReasoningEffort,
+} from "@/lib/orchestration";
 import { BEDROCK_MODELS } from "@/lib/bedrock-config";
-import type { PromptVariant } from "@/lib/review-policy";
+import { REVIEW_POLICY, type PromptVariant } from "@/lib/review-policy";
+import { explainReviewFailure } from "@/lib/review-failure";
 import { Icon } from "./icons";
 
 type Evidence = ConsensusFinding["evidence"];
-
-function failureLabel(code: string | undefined) {
-  if (code === "bedrock_access") return "Access denied";
-  if (code === "timeout") return "Time limit";
-  if (
-    code === "invalid_report" ||
-    code === "invalid_evidence" ||
-    code === "incomplete"
-  )
-    return "Rejected";
-  if (code === "bedrock_rate_limit") return "Rate limited";
-  return "Unavailable";
-}
 
 export function CouncilStatus({
   report,
@@ -70,63 +62,74 @@ export function CouncilStatus({
           {hasKey ? "Connection settings" : "Connect Bedrock"}
         </button>
       </div>
-      <div className="council-controls">
-        <label htmlFor="review-prompt">Review prompt</label>
-        <select
-          id="review-prompt"
-          value={promptVariant}
-          disabled={busy || evaluating || blocked}
-          onChange={(event) =>
-            onPromptChange(event.target.value as PromptVariant)
-          }
-        >
-          <option value="baseline">Standard</option>
-          <option value="few-shot">Guided examples</option>
-        </select>
-        <details className="execution-limits">
-          <summary>
-            Execution limits <Icon name="chevron" size={12} />
-          </summary>
-          <div>
-            <strong>Bounded orchestration</strong>
-            <p>
-              Up to two attempts per model; only transient service responses are
-              retried. A successful review is never repeated within the run.
-            </p>
-            <dl>
-              <div>
-                <dt>Model deadline</dt>
-                <dd>180 seconds, including retries</dd>
-              </div>
-              <div>
-                <dt>Run deadline</dt>
-                <dd>210 seconds</dd>
-              </div>
-              <div>
-                <dt>Request budget</dt>
-                <dd>6 model calls maximum</dd>
-              </div>
-              <div>
-                <dt>Output budget</dt>
-                <dd>8,192 tokens per attempt</dd>
-              </div>
-            </dl>
-            <p>
-              Authentication, invalid evidence and malformed reports are not
-              retried. Completed reviews remain available when another model
-              fails.
-            </p>
-          </div>
-        </details>
-        <button
-          className="quiet-button validation-trigger"
-          disabled={busy || blocked}
-          onClick={onEvaluate}
-        >
-          <Icon name="scan" size={14} />
-          {evaluating ? "View validation" : "Validate 5 cases"}
-        </button>
-      </div>
+      <details className="review-advanced-options">
+        <summary>
+          Review settings <Icon name="chevron" size={12} />
+        </summary>
+        <div className="council-controls">
+          <label htmlFor="review-prompt">Review prompt</label>
+          <select
+            id="review-prompt"
+            value={promptVariant}
+            disabled={busy || evaluating || blocked}
+            onChange={(event) =>
+              onPromptChange(event.target.value as PromptVariant)
+            }
+          >
+            <option value="baseline">Standard</option>
+            <option value="few-shot">Guided examples</option>
+          </select>
+          <details className="execution-limits">
+            <summary>
+              Execution limits <Icon name="chevron" size={12} />
+            </summary>
+            <div>
+              <strong>Bounded orchestration</strong>
+              <p>
+                Up to {REVIEW_POLICY.max_attempts_per_model} attempts per model,
+                shared by temporary-error recovery and format or evidence
+                correction. Successful reviews are not repeated.
+              </p>
+              <dl>
+                <div>
+                  <dt>Model deadline</dt>
+                  <dd>
+                    {REVIEW_POLICY.model_timeout_ms / 1000} seconds, including
+                    retries
+                  </dd>
+                </div>
+                <div>
+                  <dt>Run deadline</dt>
+                  <dd>{REVIEW_POLICY.overall_timeout_ms / 1000} seconds</dd>
+                </div>
+                <div>
+                  <dt>Request budget</dt>
+                  <dd>
+                    {REVIEW_POLICY.max_provider_requests} model calls maximum
+                  </dd>
+                </div>
+                <div>
+                  <dt>Output budget</dt>
+                  <dd>8,192 tokens per attempt</dd>
+                </div>
+              </dl>
+              <p>
+                Access denial, blocked content and cancellation are not retried.
+                Corrected responses must pass every validation check; completed
+                reviews remain available.
+              </p>
+            </div>
+          </details>
+          <button
+            className="quiet-button validation-trigger"
+            disabled={busy || blocked}
+            onClick={onEvaluate}
+          >
+            <Icon name="scan" size={14} />
+            {evaluating ? "View validation" : "Validate 5 cases"}
+          </button>
+        </div>
+      </details>
       <div className="council-models">
         {BEDROCK_MODELS.map((model, index) => {
           const result = report?.models.find(
@@ -160,13 +163,13 @@ export function CouncilStatus({
                     <span className="model-state-dot" />
                   )}
                   {busy
-                    ? "Pending"
+                    ? "Reviewing"
                     : result?.status === "succeeded"
                       ? "Reviewed"
                       : result?.status === "failed"
-                        ? failureLabel(result.error?.code)
+                        ? explainReviewFailure(result.error).label
                         : hasKey
-                          ? "Not verified"
+                          ? "Ready"
                           : "No key"}
                 </span>
                 <Icon name="chevron" size={13} />
@@ -187,14 +190,21 @@ export function CouncilStatus({
                   </>
                 ) : result?.error ? (
                   <>
-                    <strong>{result.error.code}</strong>
-                    <p>{result.error.detail}</p>
+                    <strong>{explainReviewFailure(result.error).label}</strong>
+                    <p>{explainReviewFailure(result.error).explanation}</p>
+                    <p>{explainReviewFailure(result.error).nextStep}</p>
+                    <details className="model-technical">
+                      <summary>Technical details</summary>
+                      <p>
+                        {result.error.code}: {result.error.detail}
+                      </p>
+                    </details>
                   </>
                 ) : (
                   <p>
                     {hasKey
-                      ? "The key is ready. Model access is checked when you run API analysis."
-                      : "Connect a Bedrock key, then run API analysis to request this model."}
+                      ? "A key is saved in this tab. Model access is checked when you start a Bedrock Review."
+                      : "Add a Bedrock API key, then start a Bedrock Review."}
                   </p>
                 )}
                 {!!result?.attempts?.length && (
@@ -221,6 +231,15 @@ export function CouncilStatus({
                       </li>
                     ))}
                   </ol>
+                )}
+                {result?.review && report && (
+                  <details className="model-technical">
+                    <summary>Review configuration</summary>
+                    <p>
+                      Reasoning effort:{" "}
+                      {firstReviewReasoningEffort(report, model.id)}
+                    </p>
+                  </details>
                 )}
                 <code>{model.id}</code>
               </div>
@@ -252,6 +271,7 @@ export function ConsensusEvidence({
           {finding.agreement} / {BEDROCK_MODELS.length} support
         </span>
       </div>
+      <p className="evidence-method">{firstReviewEvidenceMethod(report)}</p>
       {report.models.map((model) => {
         const members = finding.members.filter(
           (item) => item.model_id === model.model_id,

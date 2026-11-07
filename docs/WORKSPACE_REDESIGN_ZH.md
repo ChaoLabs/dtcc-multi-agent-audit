@@ -1,5 +1,7 @@
 # 工作区重设计：应用与验收
 
+> 历史补丁说明：下文记录早期界面与本地 Python 连接方式，不适用于当前网站。当前运行方式请查看 [首次运行与本地验收](FIRST_RUN_ZH.md)，当前网页使用 Next.js 服务和三模型 Bedrock 连接。
+
 本补丁 **DTCC_M0_Workspace_Redesign.patch** 直接基于已安装的 `DTCC_M0_Initialization.patch`。它替代尚未应用的 `DTCC_M0_UI_Refinement.patch`，不要叠加应用上一份界面补丁。
 
 ## 更新

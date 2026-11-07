@@ -5,11 +5,13 @@ import {
   type CouncilReport,
   type ModelAttempt,
 } from "@/lib/orchestration";
-import { REVIEW_POLICY } from "@/lib/review-policy";
+import { REVIEW_POLICY, LEGACY_REVIEW_POLICY } from "@/lib/review-policy";
 import { sha256, sourceLines } from "@/lib/static-analysis";
 
-export const SECOND_REVIEW_POLICY_VERSION = "bounded-second-review-v1" as const;
-export const SECOND_REVIEW_PROMPT_VERSION = "peer-informed-review-v1" as const;
+export const SECOND_REVIEW_POLICY_VERSION =
+  "targeted-peer-review-v5-extended-recovery" as const;
+export const SECOND_REVIEW_PROMPT_VERSION =
+  "targeted-peer-review-v7-bounded-evidence-correction-grok-medium" as const;
 export const SECOND_REVIEW_POLICY = Object.freeze({
   ...REVIEW_POLICY,
   max_candidates: 12,
@@ -20,7 +22,15 @@ export type SecondReviewPlan = {
   model_ids: string[];
   candidate_ids: string[];
   deferred_ids: string[];
-  skipped_reason: "no_disagreements" | "insufficient_reviewers" | null;
+  /** Present in v1.1; only these per-model claims may be returned. */
+  assignments?: { model_id: string; candidate_ids: string[] }[];
+  /** Successful first-round models with no actionable peer omissions or severity disputes. */
+  unassigned_model_ids?: string[];
+  skipped_reason:
+    | "no_disagreements"
+    | "insufficient_reviewers"
+    | "no_eligible_assignments"
+    | null;
 };
 export type SecondReviewAssessment = {
   finding_id: string;
@@ -45,7 +55,7 @@ export type SecondReviewModelRun = {
   attempts: ModelAttempt[];
 };
 export type SecondReviewExecution = {
-  max_attempts_per_model: 2;
+  max_attempts_per_model: 2 | 3;
   model_timeout_ms: number;
   overall_timeout_ms: number;
   total_attempts: number;
@@ -62,10 +72,22 @@ export type SecondReviewSummary = {
   deferred: boolean;
 };
 export type SecondReviewReport = {
-  schema_version: "1.0.0";
+  schema_version: "1.0.0" | "1.1.0";
   engine: "peer-informed-reassessment";
-  policy_version: typeof SECOND_REVIEW_POLICY_VERSION;
-  prompt_version: typeof SECOND_REVIEW_PROMPT_VERSION;
+  policy_version:
+    | typeof SECOND_REVIEW_POLICY_VERSION
+    | "targeted-peer-review-v4-validation-correction"
+    | "targeted-peer-review-v3-network-recovery"
+    | "targeted-peer-review-v2"
+    | "bounded-second-review-v1";
+  prompt_version:
+    | typeof SECOND_REVIEW_PROMPT_VERSION
+    | "targeted-peer-review-v6-stable-slots-grok-medium"
+    | "targeted-peer-review-v5-source-spans-grok-medium"
+    | "targeted-peer-review-v4-slots"
+    | "targeted-peer-review-v3-source-spans"
+    | "targeted-peer-review-v2"
+    | "peer-informed-review-v1";
   source_sha256: string;
   baseline_sha256: string;
   created_at: string;
@@ -77,6 +99,38 @@ export type SecondReviewReport = {
   models: SecondReviewModelRun[];
   findings: SecondReviewSummary[];
 };
+
+/** The prompt version records how citations were supplied, without relabeling old reports. */
+export function secondReviewEvidenceMethod(
+  report: Pick<SecondReviewReport, "prompt_version">,
+  modelId: string,
+) {
+  return report.prompt_version === SECOND_REVIEW_PROMPT_VERSION ||
+    report.prompt_version ===
+      "targeted-peer-review-v6-stable-slots-grok-medium" ||
+    report.prompt_version ===
+      "targeted-peer-review-v5-source-spans-grok-medium" ||
+    ((report.prompt_version === "targeted-peer-review-v4-slots" ||
+      report.prompt_version === "targeted-peer-review-v3-source-spans") &&
+      modelId === "us.xai.grok-4.7")
+    ? "Model-selected lines; excerpt retrieved from the submitted source."
+    : "Model-provided excerpt; exact match to the submitted source.";
+}
+
+/** Record configured effort without assigning new settings to historical requests. */
+export function secondReviewReasoningEffort(
+  report: Pick<SecondReviewReport, "prompt_version">,
+  modelId: string,
+) {
+  return (report.prompt_version === SECOND_REVIEW_PROMPT_VERSION ||
+    report.prompt_version ===
+      "targeted-peer-review-v6-stable-slots-grok-medium" ||
+    report.prompt_version ===
+      "targeted-peer-review-v5-source-spans-grok-medium") &&
+    modelId === "us.xai.grok-4.7"
+    ? "medium"
+    : "provider default";
+}
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -120,12 +174,13 @@ function timestamp(value: unknown): value is string {
 }
 
 /** Sorting object keys preserves array order and all original provenance. */
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+export function canonicalReviewJson(value: unknown): string {
+  if (Array.isArray(value))
+    return `[${value.map(canonicalReviewJson).join(",")}]`;
   if (object(value))
     return `{${Object.keys(value)
       .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
+      .map((key) => `${JSON.stringify(key)}:${canonicalReviewJson(value[key])}`)
       .join(",")}}`;
   if (
     value === null ||
@@ -137,13 +192,11 @@ function canonical(value: unknown): string {
   throw new Error("Non-JSON review data.");
 }
 function same(actual: unknown, expected: unknown) {
-  return canonical(actual) === canonical(expected);
+  return canonicalReviewJson(actual) === canonicalReviewJson(expected);
 }
 
 /** Call only on a validated baseline. No previous findings or votes are changed. */
-export function buildSecondReviewPlan(
-  baseline: CouncilReport,
-): SecondReviewPlan {
+function legacySecondReviewPlan(baseline: CouncilReport): SecondReviewPlan {
   if (baseline.schema_version !== "2.1.0")
     throw new Error("Second review requires a version 2.1 first-round report.");
   const queued = baseline.review_queue.map((item) => item.finding_id);
@@ -172,6 +225,68 @@ export function buildSecondReviewPlan(
   };
 }
 
+/** Muxiang's second iteration: ask each successful model about claims it omitted.
+ * Severity disagreements are an explicit extension requiring the involved reviewers.
+ * Never call a model with an empty assignment or resurrect a failed first round.
+ */
+export function buildSecondReviewPlan(
+  baseline: CouncilReport,
+): SecondReviewPlan {
+  const legacy = legacySecondReviewPlan(baseline);
+  const eligible = baseline.models
+    .filter((run) => run.status === "succeeded")
+    .map((run) => run.model_id);
+  if (legacy.skipped_reason)
+    return { ...legacy, assignments: [], unassigned_model_ids: eligible };
+  const actionable = baseline
+    .review_queue!.filter(
+      (item) =>
+        item.reasons.includes("severity_disagreement") ||
+        item.not_reported_models.length > 0,
+    )
+    .map((item) => item.finding_id);
+  const candidate_ids = actionable.slice(
+    0,
+    SECOND_REVIEW_POLICY.max_candidates,
+  );
+  const assignments = eligible
+    .map((model_id) => ({
+      model_id,
+      candidate_ids: candidate_ids.filter((id) => {
+        const finding = baseline.findings.find((item) => item.id === id)!;
+        return (
+          finding.severity_disagreement ||
+          !finding.supporting_models.includes(model_id)
+        );
+      }),
+    }))
+    .filter((item) => item.candidate_ids.length > 0);
+  return {
+    model_ids: assignments.map((item) => item.model_id),
+    candidate_ids,
+    deferred_ids: baseline
+      .review_queue!.map((item) => item.finding_id)
+      .filter((id) => !candidate_ids.includes(id)),
+    assignments,
+    unassigned_model_ids: eligible.filter(
+      (id) => !assignments.some((item) => item.model_id === id),
+    ),
+    skipped_reason: assignments.length ? null : "no_eligible_assignments",
+  };
+}
+
+/** Legacy records assigned all selected claims to every model. */
+export function assignedSecondReviewCandidates(
+  plan: SecondReviewPlan,
+  modelId: string,
+): string[] {
+  if (!plan.model_ids.includes(modelId)) return [];
+  return (
+    plan.assignments?.find((item) => item.model_id === modelId)
+      ?.candidate_ids ?? plan.candidate_ids
+  );
+}
+
 async function checkedBaseline(value: unknown, source: string) {
   const baseline = await validateCouncil(value, source);
   if (baseline.schema_version !== "2.1.0")
@@ -182,7 +297,7 @@ export async function secondReviewBaselineHash(
   baseline: unknown,
   source: string,
 ) {
-  return sha256(canonical(await checkedBaseline(baseline, source)));
+  return sha256(canonicalReviewJson(await checkedBaseline(baseline, source)));
 }
 
 /** Full local schema. Provider grammars may omit quantitative bounds; our validator never does. */
@@ -247,6 +362,9 @@ function checkCandidateIds(ids: string[]) {
     throw new Error("Invalid assigned second-review candidates.");
 }
 
+/** Public diagnostics contain only application-authored rules and bounded indices. */
+export class SecondReviewValidationError extends Error {}
+
 function checkContent(
   value: unknown,
   source: string,
@@ -261,72 +379,102 @@ function checkContent(
     !Array.isArray(value.assessments) ||
     value.assessments.length !== candidateIds.length
   )
-    throw new Error("Invalid second-review content.");
+    throw new SecondReviewValidationError(
+      "Return a non-empty summary and exactly one assessment per assigned claim.",
+    );
   const lines = sourceLines(source);
   const seen = new Set<string>();
-  const assessments = value.assessments.map((entry): SecondReviewAssessment => {
-    if (
-      !object(entry) ||
-      !keys(entry, [
-        "finding_id",
-        "verdict",
-        "proposed_severity",
-        "rationale",
-        "evidence",
-      ]) ||
-      typeof entry.finding_id !== "string" ||
-      !candidateIds.includes(entry.finding_id) ||
-      seen.has(entry.finding_id) ||
-      !["supported", "not_supported", "uncertain"].includes(
-        entry.verdict as string,
-      ) ||
-      !text(entry.rationale, 3000)
-    )
-      throw new Error("Invalid or duplicate second-review assessment.");
-    seen.add(entry.finding_id);
-    if (
-      entry.verdict === "supported"
-        ? !["HIGH", "MEDIUM", "LOW"].includes(entry.proposed_severity as string)
-        : entry.proposed_severity !== null
-    )
-      throw new Error(
-        "Severity must be present only for a supported assessment.",
-      );
-    const evidence = entry.evidence;
-    if (
-      !object(evidence) ||
-      !keys(evidence, [
-        "line_start",
-        "line_end",
-        "excerpt",
-        ...(bound ? ["validation"] : []),
-      ]) ||
-      !integer(evidence.line_start, 1, lines.length) ||
-      !integer(
-        evidence.line_end,
-        evidence.line_start,
-        Math.min(lines.length, evidence.line_start + 11),
-      ) ||
-      !text(evidence.excerpt, 12000) ||
-      evidence.excerpt !==
-        lines.slice(evidence.line_start - 1, evidence.line_end).join("\n") ||
-      (bound && evidence.validation !== "source-bound")
-    )
-      throw new Error("Second-review evidence does not match the source.");
-    return {
-      finding_id: entry.finding_id,
-      verdict: entry.verdict as SecondReviewAssessment["verdict"],
-      proposed_severity:
-        entry.proposed_severity as SecondReviewAssessment["proposed_severity"],
-      rationale: entry.rationale,
-      evidence: {
-        line_start: evidence.line_start,
-        line_end: evidence.line_end,
-        excerpt: evidence.excerpt,
-        validation: "source-bound",
-      },
-    };
-  });
+  const assessments = value.assessments.map(
+    (entry, index): SecondReviewAssessment => {
+      const field = `assessments[${index}]`;
+      if (
+        !object(entry) ||
+        !keys(entry, [
+          "finding_id",
+          "verdict",
+          "proposed_severity",
+          "rationale",
+          "evidence",
+        ]) ||
+        typeof entry.finding_id !== "string" ||
+        !candidateIds.includes(entry.finding_id) ||
+        !["supported", "not_supported", "uncertain"].includes(
+          entry.verdict as string,
+        ) ||
+        !text(entry.rationale, 3000)
+      )
+        throw new SecondReviewValidationError(
+          `${field} must use an assigned claim ID, a permitted verdict and a non-empty rationale.`,
+        );
+      if (seen.has(entry.finding_id))
+        throw new SecondReviewValidationError(
+          `${field}.finding_id duplicates another assessment. Return every assigned claim exactly once.`,
+        );
+      seen.add(entry.finding_id);
+      if (
+        entry.verdict === "supported"
+          ? !["HIGH", "MEDIUM", "LOW"].includes(
+              entry.proposed_severity as string,
+            )
+          : entry.proposed_severity !== null
+      )
+        throw new SecondReviewValidationError(
+          `${field}.proposed_severity must be HIGH, MEDIUM or LOW for supported; it must be null for not_supported or uncertain.`,
+        );
+      const evidence = entry.evidence;
+      if (
+        !object(evidence) ||
+        !keys(evidence, [
+          "line_start",
+          "line_end",
+          "excerpt",
+          ...(bound ? ["validation"] : []),
+        ])
+      )
+        throw new SecondReviewValidationError(
+          `${field}.evidence has missing or unexpected fields.`,
+        );
+      if (
+        !integer(evidence.line_start, 1, lines.length) ||
+        !integer(
+          evidence.line_end,
+          evidence.line_start,
+          Math.min(lines.length, evidence.line_start + 11),
+        )
+      )
+        throw new SecondReviewValidationError(
+          `${field}.evidence must cite 1 to 12 complete source lines using in-range, ascending line numbers.`,
+        );
+      if (!text(evidence.excerpt, 12000))
+        throw new SecondReviewValidationError(
+          `${field}.evidence.excerpt must be non-empty and at most 12000 characters.`,
+        );
+      if (
+        evidence.excerpt !==
+        lines.slice(evidence.line_start - 1, evidence.line_end).join("\n")
+      )
+        throw new SecondReviewValidationError(
+          `${field}.evidence.excerpt does not exactly match the cited source lines, including whitespace.`,
+        );
+      if (bound && evidence.validation !== "source-bound")
+        throw new SecondReviewValidationError(
+          `${field}.evidence has an invalid source-binding annotation.`,
+        );
+      return {
+        finding_id: entry.finding_id,
+        verdict: entry.verdict as SecondReviewAssessment["verdict"],
+        proposed_severity:
+          entry.proposed_severity as SecondReviewAssessment["proposed_severity"],
+        rationale: entry.rationale,
+        evidence: {
+          line_start: evidence.line_start,
+          line_end: evidence.line_end,
+          excerpt: evidence.excerpt,
+          validation: "source-bound",
+        },
+      };
+    },
+  );
   // All assessments are present exactly once. Preserve a deterministic ID order.
   return {
     summary: value.summary,
@@ -346,9 +494,14 @@ export function bindSecondReviewContent(
 }
 export const validateSecondReviewContent = bindSecondReviewContent;
 
-function checkAttempts(model: SecondReviewModelRun) {
+function checkAttempts(
+  model: SecondReviewModelRun,
+  networkRecovery: boolean,
+  validationCorrection: boolean,
+  extendedRecovery: boolean,
+) {
   const attempts = model.attempts;
-  if (!Array.isArray(attempts) || attempts.length > 2)
+  if (!Array.isArray(attempts) || attempts.length > (extendedRecovery ? 3 : 2))
     throw new Error("Invalid second-review attempt history.");
   const timedOut =
     model.status === "failed" &&
@@ -373,7 +526,14 @@ function checkAttempts(model: SecondReviewModelRun) {
       ]) ||
       attempt.attempt !== i + 1 ||
       !duration(attempt.elapsed_ms) ||
-      !integer(attempt.retry_delay_ms, 0, 5000) ||
+      !integer(
+        attempt.retry_delay_ms,
+        0,
+        networkRecovery
+          ? (extendedRecovery ? REVIEW_POLICY : LEGACY_REVIEW_POLICY)
+              .model_timeout_ms
+          : 5000,
+      ) ||
       (i === 0 && attempt.retry_delay_ms !== 0) ||
       !["succeeded", "failed"].includes(attempt.status) ||
       (attempt.status === "succeeded"
@@ -384,12 +544,18 @@ function checkAttempts(model: SecondReviewModelRun) {
     if (
       i > 0 &&
       (attempts[i - 1].status !== "failed" ||
-        !["bedrock_rate_limit", "bedrock_unavailable"].includes(
-          attempts[i - 1].error_code ?? "",
-        ))
+        ![
+          "bedrock_rate_limit",
+          "bedrock_unavailable",
+          ...(networkRecovery ? ["bedrock_network"] : []),
+          ...(extendedRecovery ? ["bedrock_model_timeout"] : []),
+          ...(validationCorrection
+            ? ["invalid_report", "invalid_evidence"]
+            : []),
+        ].includes(attempts[i - 1].error_code ?? ""))
     )
       throw new Error(
-        "A non-transient second-review failure cannot be retried.",
+        "This second-review policy does not permit retrying the recorded failure.",
       );
     elapsed += attempt.elapsed_ms + attempt.retry_delay_ms;
   }
@@ -410,6 +576,9 @@ function checkModels(
   source: string,
   sourceHash: string,
   plan: SecondReviewPlan,
+  networkRecovery: boolean,
+  validationCorrection: boolean,
+  extendedRecovery: boolean,
 ): SecondReviewModelRun[] {
   if (!Array.isArray(value) || value.length !== plan.model_ids.length)
     throw new Error(
@@ -473,7 +642,7 @@ function checkModels(
       const content = checkContent(
         { summary: review.summary, assessments: review.assessments },
         source,
-        plan.candidate_ids,
+        assignedSecondReviewCandidates(plan, entry.model_id),
         true,
       );
       if (!same(content.assessments, review.assessments))
@@ -488,7 +657,12 @@ function checkModels(
       )
         throw new Error("Invalid failed second-review outcome.");
     } else throw new Error("Invalid second-review model status.");
-    checkAttempts(entry as SecondReviewModelRun);
+    checkAttempts(
+      entry as SecondReviewModelRun,
+      networkRecovery,
+      validationCorrection,
+      extendedRecovery,
+    );
     models.push(entry as SecondReviewModelRun);
   }
   return plan.model_ids.map((id) =>
@@ -500,6 +674,7 @@ const severityRank = { HIGH: 3, MEDIUM: 2, LOW: 1 } as const;
 function summaries(
   plan: SecondReviewPlan,
   models: SecondReviewModelRun[],
+  baseline?: CouncilReport,
 ): SecondReviewSummary[] {
   return [...plan.candidate_ids, ...plan.deferred_ids].map((finding_id) => {
     const entries = models.flatMap((model) => {
@@ -508,6 +683,32 @@ function summaries(
       );
       return assessment ? [{ model_id: model.model_id, assessment }] : [];
     });
+    // Existing authors retain an explicitly first-round opinion when no task was assigned.
+    // This is carried support, never a fabricated second-round confirmation.
+    if (baseline && !plan.deferred_ids.includes(finding_id)) {
+      const original = baseline.findings.find(
+        (finding) => finding.id === finding_id,
+      )!;
+      for (const modelId of original.supporting_models) {
+        if (assignedSecondReviewCandidates(plan, modelId).includes(finding_id))
+          continue;
+        const member = original.members.find(
+          (item) => item.model_id === modelId,
+        )!;
+        const finding = baseline.models.find((run) => run.model_id === modelId)!
+          .review!.findings[member.finding_index];
+        entries.push({
+          model_id: modelId,
+          assessment: {
+            finding_id,
+            verdict: "supported",
+            proposed_severity: finding.proposed_severity,
+            rationale: finding.rationale,
+            evidence: finding.evidence,
+          },
+        });
+      }
+    }
     const ids = (verdict: SecondReviewAssessment["verdict"]) =>
       entries
         .filter((entry) => entry.assessment.verdict === verdict)
@@ -530,7 +731,7 @@ function summaries(
       !missing.length &&
       !uncertain.length &&
       supporting.length === BEDROCK_MODELS.length &&
-      !severityDisagreement
+      (baseline !== undefined || !severityDisagreement)
         ? ("supported" as const)
         : !deferred &&
             !missing.length &&
@@ -561,7 +762,10 @@ function checkExecution(
   value: unknown,
   models: SecondReviewModelRun[],
   elapsedMs: number,
+  networkRecovery: boolean,
+  extendedRecovery: boolean,
 ): SecondReviewExecution {
+  const limits = extendedRecovery ? REVIEW_POLICY : LEGACY_REVIEW_POLICY;
   if (
     !object(value) ||
     !keys(value, [
@@ -570,27 +774,43 @@ function checkExecution(
       "overall_timeout_ms",
       "total_attempts",
     ]) ||
-    value.max_attempts_per_model !== 2 ||
-    !integer(
-      value.model_timeout_ms,
-      1,
-      SECOND_REVIEW_POLICY.model_timeout_ms,
-    ) ||
-    !integer(
-      value.overall_timeout_ms,
-      1,
-      SECOND_REVIEW_POLICY.overall_timeout_ms,
-    ) ||
-    !integer(
-      value.total_attempts,
-      0,
-      SECOND_REVIEW_POLICY.max_provider_requests,
-    ) ||
+    value.max_attempts_per_model !== limits.max_attempts_per_model ||
+    !integer(value.model_timeout_ms, 1, limits.model_timeout_ms) ||
+    !integer(value.overall_timeout_ms, 1, limits.overall_timeout_ms) ||
+    !integer(value.total_attempts, 0, limits.max_provider_requests) ||
     value.total_attempts !==
       models.reduce((count, model) => count + model.attempts.length, 0) ||
     models.some((model) => model.elapsed_ms > elapsedMs)
   )
     throw new Error("Invalid second-review execution accounting.");
+  if (networkRecovery) {
+    const deadline = Math.min(
+      value.model_timeout_ms as number,
+      value.overall_timeout_ms as number,
+    );
+    for (const model of models) {
+      if (
+        extendedRecovery &&
+        model.status === "succeeded" &&
+        model.elapsed_ms > deadline + 10
+      )
+        throw new Error(
+          "Successful second review exceeds its execution deadline.",
+        );
+      let beforeAttempt = 0;
+      for (const attempt of model.attempts) {
+        beforeAttempt += attempt.retry_delay_ms;
+        // A provider-directed wait is permitted only inside this round's
+        // declared deadline. Elapsed requests and every scheduled wait remain
+        // part of the measured model duration checked above.
+        if (beforeAttempt >= deadline)
+          throw new Error(
+            "Second-review retry exceeds its execution deadline.",
+          );
+        beforeAttempt += attempt.elapsed_ms;
+      }
+    }
+  }
   return value as SecondReviewExecution;
 }
 
@@ -618,10 +838,18 @@ export async function buildSecondReviewReport(
   if (!duration(elapsedMs)) throw new Error("Invalid second-review duration.");
   const original = await checkedBaseline(baseline, source);
   const plan = buildSecondReviewPlan(original);
-  const checked = checkModels(models, source, original.source_sha256, plan);
+  const checked = checkModels(
+    models,
+    source,
+    original.source_sha256,
+    plan,
+    true,
+    true,
+    true,
+  );
   const limits = checkExecution(
     execution ?? {
-      max_attempts_per_model: 2,
+      max_attempts_per_model: SECOND_REVIEW_POLICY.max_attempts_per_model,
       model_timeout_ms: SECOND_REVIEW_POLICY.model_timeout_ms,
       overall_timeout_ms: SECOND_REVIEW_POLICY.overall_timeout_ms,
       total_attempts: checked.reduce(
@@ -631,14 +859,16 @@ export async function buildSecondReviewReport(
     },
     checked,
     elapsedMs,
+    true,
+    true,
   );
   return {
-    schema_version: "1.0.0",
+    schema_version: "1.1.0",
     engine: "peer-informed-reassessment",
     policy_version: SECOND_REVIEW_POLICY_VERSION,
     prompt_version: SECOND_REVIEW_PROMPT_VERSION,
     source_sha256: original.source_sha256,
-    baseline_sha256: await sha256(canonical(original)),
+    baseline_sha256: await sha256(canonicalReviewJson(original)),
     created_at: new Date().toISOString(),
     elapsed_ms: elapsedMs,
     rounds_used: plan.skipped_reason ? 0 : 1,
@@ -646,7 +876,7 @@ export async function buildSecondReviewReport(
     plan,
     execution: limits,
     models: checked,
-    findings: summaries(plan, checked),
+    findings: summaries(plan, checked, original),
   };
 }
 
@@ -674,10 +904,27 @@ export async function validateSecondReviewReport(
       "models",
       "findings",
     ]) ||
-    value.schema_version !== "1.0.0" ||
+    !["1.0.0", "1.1.0"].includes(value.schema_version as string) ||
     value.engine !== "peer-informed-reassessment" ||
-    value.policy_version !== SECOND_REVIEW_POLICY_VERSION ||
-    value.prompt_version !== SECOND_REVIEW_PROMPT_VERSION ||
+    (value.schema_version === "1.1.0"
+      ? !(
+          ((value.policy_version === SECOND_REVIEW_POLICY_VERSION ||
+            value.policy_version ===
+              "targeted-peer-review-v4-validation-correction") &&
+            value.prompt_version === SECOND_REVIEW_PROMPT_VERSION) ||
+          (value.policy_version ===
+            "targeted-peer-review-v3-network-recovery" &&
+            (value.prompt_version ===
+              "targeted-peer-review-v6-stable-slots-grok-medium" ||
+              value.prompt_version ===
+                "targeted-peer-review-v5-source-spans-grok-medium" ||
+              value.prompt_version === "targeted-peer-review-v4-slots")) ||
+          (value.policy_version === "targeted-peer-review-v2" &&
+            (value.prompt_version === "targeted-peer-review-v3-source-spans" ||
+              value.prompt_version === "targeted-peer-review-v2"))
+        )
+      : value.policy_version !== "bounded-second-review-v1" ||
+        value.prompt_version !== "peer-informed-review-v1") ||
     !timestamp(value.created_at) ||
     !duration(value.elapsed_ms)
   )
@@ -685,12 +932,15 @@ export async function validateSecondReviewReport(
   const original = await checkedBaseline(baseline, source);
   if (
     value.source_sha256 !== original.source_sha256 ||
-    value.baseline_sha256 !== (await sha256(canonical(original)))
+    value.baseline_sha256 !== (await sha256(canonicalReviewJson(original)))
   )
     throw new Error(
       "Second review does not match the original report and source.",
     );
-  const plan = buildSecondReviewPlan(original);
+  const plan =
+    value.schema_version === "1.0.0"
+      ? legacySecondReviewPlan(original)
+      : buildSecondReviewPlan(original);
   if (
     !same(value.plan, plan) ||
     value.rounds_used !== (plan.skipped_reason ? 0 : 1)
@@ -703,12 +953,35 @@ export async function validateSecondReviewReport(
     source,
     original.source_sha256,
     plan,
+    value.policy_version === SECOND_REVIEW_POLICY_VERSION ||
+      value.policy_version ===
+        "targeted-peer-review-v4-validation-correction" ||
+      value.policy_version === "targeted-peer-review-v3-network-recovery",
+    value.policy_version === SECOND_REVIEW_POLICY_VERSION ||
+      value.policy_version === "targeted-peer-review-v4-validation-correction",
+    value.policy_version === SECOND_REVIEW_POLICY_VERSION,
   );
-  checkExecution(value.execution, models, value.elapsed_ms);
+  checkExecution(
+    value.execution,
+    models,
+    value.elapsed_ms,
+    value.policy_version === SECOND_REVIEW_POLICY_VERSION ||
+      value.policy_version ===
+        "targeted-peer-review-v4-validation-correction" ||
+      value.policy_version === "targeted-peer-review-v3-network-recovery",
+    value.policy_version === SECOND_REVIEW_POLICY_VERSION,
+  );
   if (
     !same(value.models, models) ||
     value.status !== status(plan, models) ||
-    !same(value.findings, summaries(plan, models))
+    !same(
+      value.findings,
+      summaries(
+        plan,
+        models,
+        value.schema_version === "1.1.0" ? original : undefined,
+      ),
+    )
   )
     throw new Error(
       "Second-review summaries do not match the validated reassessments.",

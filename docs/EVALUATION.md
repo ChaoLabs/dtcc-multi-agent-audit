@@ -17,13 +17,15 @@ The immediate evaluation keeps the existing five Solidity sources unchanged. Its
 ## Run from the website
 
 1. Add a current authorized Bedrock key and verify a single short-contract analysis first.
-2. Select **Standard** or **Guided examples**. Keep that selection fixed for the suite.
-3. Open **Validate 5 cases**. Leave **Include second review** off for first-pass-only evaluation, or enable it to pair each first-pass result with a bounded reconsideration. The five contracts run sequentially. First-pass-only mode allows at most 30 provider requests; paired mode allows at most 60, including retries.
-4. Select **Run five-case validation**. The browser has a 20-minute ceiling for first-pass-only mode and 40 minutes when second review is enabled. Each pass has a 235-second browser wait ceiling outside the server's stricter 210-second request deadline. Inspect case completion and model outcomes; cancel when needed. Cancellation stops subsequent cases and retains already completed records. An authentication, permission or rate-limit failure can stop the suite early to avoid repeatedly submitting more contracts under the same failure condition.
+2. Open **Review settings** and select **Standard** or **Guided examples**. Keep that selection fixed for the suite.
+3. Open **Validate 5 cases** under **Review settings**. This is a separate explicit batch, independent of the workspace's manually initiated second round. Leave **Include second review** off for first-pass-only evaluation, or enable it to pair each first-pass result with a bounded reconsideration. The five contracts run sequentially. First-pass-only mode allows at most 45 provider requests; paired mode allows at most 90, including retries.
+4. Select **Run five-case validation**. The browser has a 25-minute 5-second ceiling for first-pass-only mode and 49 minutes 40 seconds when second review is enabled. Each pass has a 295-second browser wait ceiling outside the server's stricter 285-second request deadline. Inspect case completion and model outcomes; cancel when needed. Cancellation stops subsequent cases and retains already completed records. An authentication, permission or rate-limit failure can stop the suite early to avoid repeatedly submitting more contracts under the same failure condition.
 5. Select **Download validation JSON**. It retains case/source identities, run settings, accepted model reports, failures and operational metrics. Paired mode also retains the exact first-pass baseline, second-pass outcomes and before/after summaries, including skipped or deferred work. It contains no API key.
-6. Start the other prompt variant separately only when ready to incur another bounded set of calls. Comparing both prompt variants can issue at most 60 provider requests in first-pass-only mode, or 120 with second review enabled for both. These are separate explicit batches.
+6. Start the other prompt variant separately only when ready to incur another bounded set of calls. Comparing both prompt variants can issue at most 90 provider requests in first-pass-only mode, or 180 with second review enabled for both. These are separate explicit batches.
 
 Do not repeatedly rerun failed suites to select only favorable outputs. Record interruptions, failures and the reason for any manual rerun. An exported record is the evidence; the UI's key-ready indicator is not a successful model-access test.
+
+A batch status of `completed` means that the case loop finished, not that all fifteen independent model reviews succeeded. Second-round completion uses only the assignments actually planned for that baseline; it does not recover a failed first-round model. Two completed follow-up assignments can coexist with two-of-three overall independent coverage. A content-filter or guardrail stop is terminal, not an automatic-retry candidate or a successful empty review. Read completion counts together with coverage and failure details. Unresolved findings include missing model coverage as well as differing judgments.
 
 ## Measure execution before detection quality
 
@@ -33,7 +35,7 @@ Do not repeatedly rerun failed suites to select only favorable outputs. Record i
 | Full / partial coverage | Cases with three accepted model reviews, or with one/two accepted reviews, respectively; record unstarted/cancelled cases separately |
 | Model completion | Accepted model reviews out of the planned 15; also inspect completion among models actually started |
 | Retry use | Count recorded attempts and extra attempts per model; requests without a validated returned report may have unreported attempts. A retry is not an additional independent vote |
-| Failures | Keep sanitized reason codes, including access, throttling, timeout, format and evidence errors |
+| Failures | Keep sanitized reason codes, including access, throttling, timeout, content filtering, guardrail intervention, format and evidence errors |
 | Latency | Record per-case elapsed time and suite wall time; compare comparable successful/failed cases rather than discarding failures |
 | Token usage | Sum only counters actually returned for accepted reviews; failed-attempt usage may be unknown |
 | Disagreement | Record severity differences and incomplete support; lack of a finding is not an explicit rebuttal |
@@ -45,7 +47,7 @@ Reported token totals are not a full invoice or a firm cost ceiling. Each attemp
 
 Use the same first-pass report as the before snapshot and as the input to its second review. Re-running the first pass creates a different stochastic sample and is not a paired before/after observation. Preserve the exported baseline fingerprint, source hash, prompt settings and all reviewer outcomes.
 
-The second review requires at least two successful first-pass reviewers. It reconsiders at most twelve queued claims and does not recover a failed reviewer. Remaining claims are deferred. A case with no eligible queue can be skipped without a model call; skipped work is not a failed invocation or an improvement.
+The second review requires at least two successful first-pass reviewers and selects at most twelve actionable queued claims. Each reviewer receives omitted peer findings plus severity-disputed claims; empty assignments cause no call. Failed first-pass models remain unavailable. Remaining claims are deferred, including claims with only unavailable coverage and no eligible peer assignment. Deferred does not necessarily mean a selection limit was reached. A case with no eligible assignments is skipped without a model call; skipped work is not a failed invocation or an improvement.
 
 | Comparison | Record | What it does not establish |
 | --- | --- | --- |
@@ -55,17 +57,40 @@ The second review requires at least two successful first-pass reviewers. It reco
 | Execution | Added attempts, latency and returned usage for the second pass | Complete billing for failed/cancelled requests |
 | Human quality | Before/after judgments on the same root-cause/location claim | Accuracy without reviewed labels and matching rules |
 
-The second-pass summary requires all three configured models to support a claim with matching severity, or all three to explicitly not support it. All other states remain unresolved. This deliberately avoids converting agreement among only two available models into apparent full coverage.
+The derived Final Report uses the last accepted position from each model, with its round of origin labeled. Accepted second-round judgments supersede prior positions. When a reassessment fails, a valid original finding and its severity remain recorded, with pending reassessment and retained provenance explicit. Three recorded supporters can therefore coexist with an incomplete reassessment; pending work still requires review. Severity alignment and explicit rejection remain separate. This final display policy does not alter canonical second-round summaries or the eligible paired cohort below. Retained first-round opinions are not counted as successful second-round responses or accuracy gains.
 
-### Human assessment of false positives and missed issues
+### Human-reviewed accuracy
 
-Use the review template to label each distinct claim as supported, unsupported or unresolved before looking at the second-pass summary. Record the second-pass judgment separately. Review the explanation and source mechanism; a change in vote count is not a quality label.
+The **Human-reviewed accuracy** section supports an explicit reviewed dataset rather than deriving correctness from model agreement.
 
-Track at least four outcomes: unsupported claims appropriately challenged, unsupported claims still supported, supported claims retained, and supported claims wrongly withdrawn. Include deferred/unresolved outcomes in the denominator rather than dropping them. Report counts first on this small dataset; do not invent an accuracy percentage from model agreement.
+1. Select **Download review template** for the selected run. It creates a JSON file with all accepted baseline findings marked `unreviewed`, empty reference inventories and `inventory_complete: false`.
+2. Supply the human reviewer name. For each distinct root-cause/location issue, record a reference ID, title, category, source lines and rationale in `reference_issues`. Include independently identified issues absent from every model report.
+3. Label each reported finding `confirmed`, `refuted`, `uncertain` or `unreviewed`. Reviewed labels require rationale; confirmed claims must reference a known issue ID. Do not use model agreement as the label.
+4. Mark an inventory complete only after reviewing the entire supplied source and recording why the inventory is sufficient. Leaving it incomplete is valid and keeps recall unavailable.
+5. Choose **Import human review**. Source SHA-256, exact first-round baseline SHA-256, IDs, source bounds, label shape and duplicate records are checked. Files are limited to 1 MB. A review for another run or modified source is rejected.
+6. Select **Export reviewed comparison** to retain the raw run, labels and derived metrics in `dtcc-adjudicated-comparison.json`. Exporting creates no provider call and includes no API key.
 
-Missed-issue analysis requires a human-reviewed inventory of vulnerabilities, including issues absent from all model reports. The second pass cannot discover an issue absent from the selected first-pass queue. It can only expose a peer's existing claim to a reviewer who did not report it, or reconsider a claim's validity. Do not describe that as eliminating false negatives across the contract.
+| Metric | Definition and eligibility |
+| --- | --- |
+| True positives | Supported predictions matched to human-confirmed reference issues, deduplicated by issue per model |
+| False positives | Supported predictions explicitly refuted by human review |
+| Precision | TP / (TP + FP); unavailable while any positive prediction is uncertain or unreviewed, or the denominator is empty |
+| False negatives | Reviewed reference issues without a supported matched prediction; unavailable unless the inventory is explicitly complete |
+| Recall | TP / (TP + FN); requires complete inventory and reviewed prediction conditions; unavailable with no reference issues |
+| F1 | Harmonic mean of eligible precision and recall; unavailable when either prerequisite is missing |
+| Coverage | Shows which cases and models contribute to a comparable pair; excluded or missing work is not evidence of correctness |
 
-Use [the blank review template](evaluation_review_template.csv), duplicating rows per claim or known missed issue. Keep judgments blank until review; the template is not ground truth. At least one other reviewer should inspect disputed labels where practical. Record remaining uncertainty and any changes to the team's label inventory.
+Counts are micro-averaged over model/issue predictions, not over consensus groups. First- and second-round metrics use the same eligible model cohort. A failed second-round reviewer is excluded from both sides of the paired comparison, with the coverage loss disclosed. Valid assigned judgments replace that reviewer's original support; unassigned claims retain their original position. `uncertain` is not a positive prediction and is not a human refutation. Second-round abstentions are counted separately from explicit rejections: a fall in false-positive predictions caused by abstention is not evidence that those claims were disproved. Duplicate confirmed findings that refer to the same issue count once per model.
+
+These metrics evaluate the supplied human judgments and chosen matching inventory. They do not verify the human labels themselves. A small set of teaching contracts cannot establish general accuracy. Report counts and exclusions alongside ratios, and retain disagreement about labels as uncertainty.
+
+The older [CSV worksheet](evaluation_review_template.csv) remains an optional manual note-taking format. The website imports the structured JSON template, not that CSV.
+
+### Saved runs and reproducibility
+
+**Recent runs in this tab** retains the latest ten run records, including partial and cancelled runs. It is in memory only; refresh removes the history. Export records before closing the page. **Import saved run** accepts a bounded JSON export of at most 5 MB, validates it against the five fixed source snapshots, checks source/baseline binding and recomputes derived metrics. Importing and comparing a saved run do not call AWS. It does not import a key or turn an unsigned file into proof of provider authenticity.
+
+Keep failure records rather than selecting only favorable runs. A different source hash, prompt variant or first-round baseline describes a different experiment. The second round cannot discover an issue that all first-round models missed; an independent reference inventory is necessary to observe that gap.
 
 ## In-context learning comparison
 
@@ -77,17 +102,17 @@ For a practical first comparison:
 
 1. Run each variant once on all five cases and save both exports with commit, date, Region, prompt version and model IDs.
 2. If access and budget permit, repeat each variant at least three times, alternating the order of variants. Keep failure records. Treat results as a small descriptive study, not a statistically established improvement.
-3. Have team members review findings independently before comparing model agreement. Mark each distinct claim as supported, unsupported or unresolved, with a source location and explanation. Reconcile reviewer disagreements explicitly.
+3. Review findings against the source before comparing model agreement. Mark each distinct claim as supported, unsupported or unresolved, with a source location and explanation. Reconcile reviewer disagreements explicitly.
 4. Compare completion, retries, timeouts, format/evidence rejections, claim stability, duplicate claims, severity differences and reviewed false positives. Report missing information rather than converting it to zero.
-5. Report precision/recall only after the team has a sufficiently complete, agreed vulnerability inventory and documented root-cause/location matching. These five teaching fixtures alone do not support broad accuracy claims.
+5. Report precision/recall only after the required human labels, complete issue inventory and documented root-cause/location matching are available. These five teaching fixtures alone do not support broad accuracy claims.
 
 In-context learning changes the information presented in a prompt; it does not fine-tune weights. It can help task consistency, but can also bias outputs or correlate model errors. Its effect on this platform remains an empirical question.
 
-## Team review record
+## Review record and acceptance
 
-Use [the blank review template](evaluation_review_template.csv); duplicate a case row for each distinct claim and leave judgments blank until review. For each issue, capture the case ID, source hash, prompt variant, exported timestamp, baseline fingerprint, model(s), claim location, separate first/second-pass human judgments, reason for changes and unresolved question. Assign review responsibilities during the meeting instead of attributing work to a teammate who has not agreed to it.
+Record the source hash, prompt version, execution policy, exact baseline, human reviewer, issue identity, label rationale and unresolved questions. Keep runs using the bounded second-review correction policy distinguishable from older runs: an extra valid generation may change execution coverage, but does not establish better accuracy. Preserve evidence for false positives correctly challenged, false positives retained, true findings retained and true findings lost. Keep unknown labels visible rather than treating them as negatives.
 
-Before expanding the dataset, agree on what counts as an actionable finding, how unavailable models affect comparisons, the permitted call budget and the evidence needed to call this five-case workflow stable. Additional datasets, compiler-backed checks and held-out evaluation should follow that agreement.
+Before expanding the dataset, verify that the five-case workflow preserves original reports, produces correct assignments and final rows, respects resource limits and retains failures. Then use repeated authorized runs and reviewed labels to assess stability. Larger datasets, compiler-backed checks and held-out evaluation remain separate extensions.
 
 ## References
 

@@ -10,8 +10,9 @@ import {
   type CouncilReport,
   type ConsensusFinding,
 } from "@/lib/orchestration";
+import { downloadFinalReviewReport } from "@/lib/second-review-export";
 import { downloadCouncilReport } from "@/lib/council-export";
-import { downloadSecondReviewReport } from "@/lib/second-review-export";
+import { reviewStageAvailability, type ReviewStage } from "@/lib/review-stages";
 import {
   buildSecondReviewPlan,
   type SecondReviewReport,
@@ -20,9 +21,15 @@ import {
   requestSecondReview,
   SecondReviewRequestError,
 } from "@/lib/second-review-client";
-import type { PromptVariant } from "@/lib/review-policy";
+import {
+  REVIEW_CLIENT_TIMEOUT_MS,
+  REVIEW_POLICY,
+  type PromptVariant,
+} from "@/lib/review-policy";
+import { createReviewRunGate } from "@/lib/review-workflow";
 import { EvaluationPanel } from "./evaluation-panel";
 import { SecondReviewPanel } from "./second-review-panel";
+import { FinalReportPanel } from "./final-report-panel";
 import { analyzeStatic, validateInput } from "@/lib/static-analysis";
 import { BEDROCK_MODELS, validateApiKey } from "@/lib/bedrock-config";
 import { Icon } from "./icons";
@@ -62,8 +69,11 @@ export default function Workspace({ cases }: { cases: Case[] }) {
   const [secondBusy, setSecondBusy] = useState(false);
   const [secondAttempted, setSecondAttempted] = useState(false);
   const [secondError, setSecondError] = useState("");
+  const [reviewStage, setReviewStage] = useState<ReviewStage>("findings");
+  const secondAttemptedRef = useRef(false);
   const secondRequest = useRef<AbortController | null>(null);
   const secondGeneration = useRef(0);
+  const secondAdmissions = useRef(0);
   const [resultView, setResultView] = useState<"static" | "consensus">(
     "static",
   );
@@ -96,27 +106,30 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     evidence?: Finding["evidence"];
   } | null>(null);
   const sourceView = useRef<HTMLDivElement>(null);
+  const sourceInput = useRef<HTMLTextAreaElement>(null);
   const findingsView = useRef<HTMLDivElement>(null);
+  const reviewStages = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const caseDialog = useRef<HTMLDialogElement>(null);
   const apiDialog = useRef<HTMLDialogElement>(null);
   const reportDialog = useRef<HTMLDialogElement>(null);
   const methodDialog = useRef<HTMLDialogElement>(null);
   const version = useRef(0);
-  const request = useRef<AbortController | null>(null);
+  const runGate = useRef(createReviewRunGate());
   const mounted = useRef(true);
   useEffect(() => {
+    const gate = runGate.current;
     mounted.current = true;
     return () => {
       mounted.current = false;
-      request.current?.abort();
+      gate.cancel();
       secondRequest.current?.abort();
       apiKey.current = "";
     };
   }, []);
   useEffect(() => {
     findingsView.current?.scrollTo({ top: 0 });
-  }, [resultView, filter, confidence, query, reviewQueueOnly]);
+  }, [resultView, reviewStage, filter, confidence, query, reviewQueueOnly]);
   const validReport =
     report?.input.source === source && report.input.filename === filename
       ? report
@@ -125,6 +138,12 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     validReport && council?.source_sha256 === validReport.source_sha256
       ? council
       : null;
+  const stages = reviewStageAvailability(
+    validCouncil,
+    secondReview,
+    busy || secondBusy,
+  );
+  const showFindings = mode === "static" || reviewStage === "findings";
   const showConsensus = mode === "api" && resultView === "consensus";
   const findings: Finding[] = showConsensus
     ? (validCouncil?.findings.map((item) => ({
@@ -155,18 +174,24 @@ export default function Workspace({ cases }: { cases: Case[] }) {
   const completedModels =
     validCouncil?.models.filter((item) => item.status === "succeeded").length ??
     0;
-  function exportReport(format: "json" | "md") {
+  async function exportReport(format: "json" | "md") {
     if (!validReport) return;
-    if (validCouncil && secondReview)
-      downloadSecondReviewReport(
-        validCouncil,
-        secondReview,
-        format,
-        validReport,
+    try {
+      if (validCouncil && stages.finalReportAvailable)
+        await downloadFinalReviewReport(
+          validCouncil,
+          secondReview,
+          format,
+          validReport,
+        );
+      else if (validCouncil)
+        downloadCouncilReport(validReport, format, validCouncil);
+      else downloadReport(validReport, format);
+    } catch {
+      setError(
+        "The report could not be exported because its source or review binding failed validation.",
       );
-    else if (validCouncil)
-      downloadCouncilReport(validReport, format, validCouncil);
-    else downloadReport(validReport, format);
+    }
   }
   function changeResultView(next: "static" | "consensus") {
     setResultView(next);
@@ -182,6 +207,16 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     setFocusTarget(null);
   }
 
+  function selectReviewStage(stage: ReviewStage) {
+    setReviewStage(stage);
+    if (stage === "final") return;
+    requestAnimationFrame(() => {
+      reviewStages.current
+        ?.querySelector<HTMLButtonElement>(`[data-review-stage="${stage}"]`)
+        ?.focus();
+    });
+  }
+
   const resetSecondReview = useCallback(() => {
     secondGeneration.current++;
     secondRequest.current?.abort();
@@ -189,12 +224,15 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     setSecondBusy(false);
     setSecondReview(null);
     setSecondAttempted(false);
+    secondAttemptedRef.current = false;
+    secondAdmissions.current = 0;
     setSecondError("");
+    setReviewStage("findings");
   }, []);
 
   const invalidate = useCallback(() => {
     version.current++;
-    request.current?.abort();
+    runGate.current.cancel();
     resetSecondReview();
     setBusy(false);
     setReport(null);
@@ -287,13 +325,14 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     if (secondBusy) cancelSecondReview();
     if (busy) {
       version.current++;
-      request.current?.abort();
+      runGate.current.cancel();
       setBusy(false);
     }
     setMode(next);
-    changeResultView(next === "api" && validCouncil ? "consensus" : "static");
+    setReviewStage("findings");
+    changeResultView(next === "api" ? "consensus" : "static");
     setError("");
-    if (next === "api") apiDialog.current?.showModal();
+    if (next === "api" && !apiKey.current) apiDialog.current?.showModal();
   }
   function changePrompt(next: PromptVariant) {
     if (busy || evaluating || secondBusy) return;
@@ -309,12 +348,11 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     try {
       const key = validateApiKey(keyInput.current?.value ?? "");
       version.current++;
-      request.current?.abort();
-      resetSecondReview();
+      runGate.current.cancel();
+      if (secondRequest.current) cancelSecondReview();
       setBusy(false);
-      setCouncil(null);
-      setFocusTarget(null);
-      setElapsed(null);
+      // Replacing a credential does not invalidate already validated evidence.
+      // Any active request is cancelled; completed reports remain exportable.
       setError("");
       evaluationRequest.current?.abort();
       apiKey.current = key;
@@ -331,31 +369,129 @@ export default function Workspace({ cases }: { cases: Case[] }) {
   }
   function clearKey() {
     evaluationRequest.current?.abort();
-    resetSecondReview();
+    if (secondRequest.current) cancelSecondReview();
     version.current++;
-    request.current?.abort();
+    runGate.current.cancel();
     setBusy(false);
     apiKey.current = "";
     if (keyInput.current) keyInput.current.value = "";
     setHasKey(false);
     setVerified(false);
-    setCouncil(null);
-    setFocusTarget(null);
-    setElapsed(null);
     setError("");
     setConfigError("");
   }
+  const performSecondReview = useCallback(
+    async ({
+      baseline,
+      source,
+      filename,
+      key,
+      parentSignal,
+      isCurrent,
+    }: {
+      baseline: CouncilReport;
+      source: string;
+      filename: string;
+      key: string;
+      parentSignal?: AbortSignal;
+      isCurrent: () => boolean;
+    }) => {
+      if (
+        secondAttemptedRef.current ||
+        secondAdmissions.current >= 2 ||
+        secondRequest.current ||
+        !isCurrent()
+      )
+        return;
+      const plan = buildSecondReviewPlan(baseline);
+      if (plan.skipped_reason || !plan.candidate_ids.length) return;
+      const stamp = ++secondGeneration.current;
+      const abort = new AbortController();
+      const stop = () => abort.abort();
+      parentSignal?.addEventListener("abort", stop, { once: true });
+      if (parentSignal?.aborted || !isCurrent()) {
+        parentSignal?.removeEventListener("abort", stop);
+        return;
+      }
+      secondRequest.current = abort;
+      secondAdmissions.current++;
+      setSecondBusy(true);
+      setSecondAttempted(true);
+      secondAttemptedRef.current = true;
+      setSecondError("");
+      try {
+        const result = await requestSecondReview({
+          apiKey: key,
+          filename,
+          source,
+          baseline: baseline,
+          signal: abort.signal,
+        });
+        if (
+          !mounted.current ||
+          !isCurrent() ||
+          secondGeneration.current !== stamp ||
+          abort.signal.aborted
+        )
+          return;
+        setSecondReview(result);
+      } catch (cause) {
+        if (
+          mounted.current &&
+          isCurrent() &&
+          secondGeneration.current === stamp
+        ) {
+          const safeRecovery =
+            !abort.signal.aborted &&
+            cause instanceof SecondReviewRequestError &&
+            cause.safeToRetry &&
+            secondAdmissions.current < 2;
+          if (safeRecovery) {
+            secondAttemptedRef.current = false;
+            setSecondAttempted(false);
+          }
+          setSecondError(
+            abort.signal.aborted
+              ? "Second Review cancelled. First-round findings remain available."
+              : safeRecovery
+                ? "The service is busy; no model calls were started. Wait briefly, then select Run Second Review to try once more."
+                : cause instanceof SecondReviewRequestError
+                  ? `${cause.message}${cause.safeToRetry ? " The admission retry limit is reached; start a new first review when the service is ready." : ""}`
+                  : "Second Review did not return a valid result. First-round findings remain available. Start a new Bedrock Review before another attempt.",
+          );
+        }
+      } finally {
+        parentSignal?.removeEventListener("abort", stop);
+        if (secondRequest.current === abort) secondRequest.current = null;
+        if (mounted.current && secondGeneration.current === stamp)
+          setSecondBusy(false);
+      }
+    },
+    [],
+  );
+
   const runAudit = useCallback(async () => {
-    if (evaluating || busy || secondBusy || secondRequest.current) return;
+    if (
+      evaluating ||
+      busy ||
+      secondBusy ||
+      secondRequest.current ||
+      runGate.current.isActive()
+    )
+      return;
     if (mode === "api" && !apiKey.current) {
       apiDialog.current?.showModal();
       return;
     }
     invalidate();
+    const lease = runGate.current.begin();
+    if (!lease) return;
     const stamp = version.current;
     const snapshot = { filename, source };
-    const abort = new AbortController();
-    request.current = abort;
+    const abort = lease.controller;
+    const key = apiKey.current;
+    const isCurrent = () =>
+      lease.isCurrent() && stamp === version.current && mounted.current;
     setBusy(true);
     if (mode === "api") setVerified(false);
     setResultView(mode === "api" ? "consensus" : "static");
@@ -364,10 +500,10 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     setFilter("ALL");
     setQuery("");
     const start = performance.now();
-    const timer = setTimeout(() => abort.abort(), 240_000);
+    const timer = setTimeout(() => abort.abort(), REVIEW_CLIENT_TIMEOUT_MS);
     try {
       const baseline = await analyzeStatic(snapshot.filename, snapshot.source);
-      if (stamp !== version.current || !mounted.current) return;
+      if (!isCurrent()) return;
       setReport(baseline);
       setExpanded(baseline.candidates[0]?.id ?? null);
       setEditing(false);
@@ -377,7 +513,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             ...snapshot,
-            api_key: apiKey.current,
+            api_key: key,
             prompt_variant: promptVariant,
           }),
           signal: abort.signal,
@@ -385,14 +521,14 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           cache: "no-store",
           redirect: "error",
         });
-        if (stamp !== version.current || !mounted.current) return;
+        if (!isCurrent()) return;
         const value = await response.json().catch(() => null);
         if (!response.ok) {
           if (value?.code === "bedrock_access") setVerified(false);
           throw new Error(
             typeof value?.detail === "string"
               ? value.detail
-              : `API analysis failed (HTTP ${response.status}).`,
+              : `Bedrock Review failed (HTTP ${response.status}).`,
           );
         }
         const result = await validateCouncil(value, snapshot.source);
@@ -402,12 +538,15 @@ export default function Workspace({ cases }: { cases: Case[] }) {
             result.execution.prompt_variant !== promptVariant)
         )
           throw new Error(
-            "The returned prompt setting does not match this review. Please run analysis again.",
+            "The returned settings do not match this review. Please start a new Bedrock Review.",
           );
-        if (stamp !== version.current || !mounted.current) return;
+        if (!isCurrent()) return;
         setVerified(result.status === "completed");
         setCouncil(result);
         setExpanded(result.findings[0]?.id ?? null);
+        setElapsed(Math.round(performance.now() - start));
+        clearTimeout(timer);
+        setBusy(false);
       } else {
         await validateResponse(
           baseline,
@@ -416,7 +555,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           "browser",
         );
       }
-      if (stamp === version.current && mounted.current)
+      if (isCurrent() && mode === "static")
         setElapsed(Math.round(performance.now() - start));
     } catch (cause) {
       if (stamp === version.current && mounted.current)
@@ -424,13 +563,14 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           cause instanceof TypeError
             ? "Cannot reach the analysis service. Check your connection and retry."
             : cause instanceof Error && cause.name === "AbortError"
-              ? "API analysis timed out. Static results remain available."
+              ? "Bedrock Review timed out. Static Analysis results remain available."
               : cause instanceof Error
                 ? cause.message
                 : "Analysis failed.",
         );
     } finally {
       clearTimeout(timer);
+      lease.finish();
       if (stamp === version.current && mounted.current) setBusy(false);
     }
   }, [
@@ -449,8 +589,8 @@ export default function Workspace({ cases }: { cases: Case[] }) {
       busy ||
       evaluating ||
       secondBusy ||
-      secondAttempted ||
-      secondRequest.current ||
+      runGate.current.isActive() ||
+      secondAttemptedRef.current ||
       !validCouncil ||
       validCouncil.schema_version !== "2.1.0"
     )
@@ -459,61 +599,33 @@ export default function Workspace({ cases }: { cases: Case[] }) {
       apiDialog.current?.showModal();
       return;
     }
-    const plan = buildSecondReviewPlan(validCouncil);
-    if (plan.skipped_reason || !plan.candidate_ids.length) return;
-    const stamp = ++secondGeneration.current;
-    const abort = new AbortController();
-    secondRequest.current = abort;
-    setSecondBusy(true);
-    setSecondAttempted(true);
-    setSecondError("");
-    try {
-      const result = await requestSecondReview({
-        apiKey: apiKey.current,
-        filename,
-        source,
-        baseline: validCouncil,
-        signal: abort.signal,
-      });
-      if (
-        !mounted.current ||
-        secondGeneration.current !== stamp ||
-        abort.signal.aborted
-      )
-        return;
-      setSecondReview(result);
-    } catch (cause) {
-      if (mounted.current && secondGeneration.current === stamp)
-        setSecondError(
-          abort.signal.aborted
-            ? "Second review stopped. Independent results are retained."
-            : cause instanceof SecondReviewRequestError
-              ? `${cause.message} Independent results are retained.`
-              : "Second review did not return a valid result. Independent results are retained. Start a new API analysis before another experiment.",
-        );
-    } finally {
-      if (secondRequest.current === abort) secondRequest.current = null;
-      if (mounted.current && secondGeneration.current === stamp)
-        setSecondBusy(false);
-    }
+    const stamp = version.current;
+    await performSecondReview({
+      baseline: validCouncil,
+      source,
+      filename,
+      key: apiKey.current,
+      isCurrent: () => mounted.current && version.current === stamp,
+    });
   }
 
   function cancelSecondReview() {
+    runGate.current.cancel();
     secondGeneration.current++;
     secondRequest.current?.abort();
     secondRequest.current = null;
     setSecondBusy(false);
     setSecondError(
-      "Second review cancelled. Independent results are retained; no further second-round calls will be started by this browser.",
+      "Second Review cancelled. First-round findings remain available; no further second-round calls will start.",
     );
   }
 
   function cancel() {
     version.current++;
-    request.current?.abort();
+    runGate.current.cancel();
     setBusy(false);
     setError(
-      "API analysis cancelled. Any completed static results remain available.",
+      "Review cancelled. Any completed Static Analysis results remain available.",
     );
   }
   async function copySource() {
@@ -619,7 +731,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                 onClick={() => switchMode("static")}
               >
                 <Icon name="scan" />
-                Static analysis<span>On-device</span>
+                Static Analysis<span>On-device</span>
               </button>
               <button
                 className={mode === "api" ? "selected" : ""}
@@ -627,7 +739,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                 onClick={() => switchMode("api")}
               >
                 <Icon name="layers" />
-                API analysis<span>Bedrock</span>
+                Bedrock Review<span>3 models</span>
               </button>
             </div>
             <div className="workspace-actions">
@@ -652,6 +764,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
               </button>
             </div>
           </div>
+
           {mode === "api" && (
             <CouncilStatus
               report={validCouncil}
@@ -689,11 +802,13 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                     <Icon name="plus" size={16} />
                   </button>
                   <button
+                    className="upload-contract-button"
                     aria-label="Open Solidity file"
                     title="Open .sol file"
                     onClick={() => fileInput.current?.click()}
                   >
                     <Icon name="upload" size={16} />
+                    <span>Upload contract</span>
                   </button>
                   <button
                     aria-label={copied ? "Source copied" : "Copy source"}
@@ -734,6 +849,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
               </div>
               {editing ? (
                 <textarea
+                  ref={sourceInput}
                   aria-label="Solidity source"
                   className="source-edit"
                   value={source}
@@ -765,10 +881,13 @@ export default function Workspace({ cases }: { cases: Case[] }) {
               </div>
               <footer className="source-footer">
                 <span className="shortcut">⌘ / Ctrl + Enter</span>
-                {busy ? (
-                  <button className="run-button running" onClick={cancel}>
+                {busy || secondBusy ? (
+                  <button
+                    className="run-button running"
+                    onClick={secondBusy ? cancelSecondReview : cancel}
+                  >
                     <span className="spinner" />
-                    Cancel analysis
+                    Cancel Review
                   </button>
                 ) : (
                   <button
@@ -781,8 +900,8 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                       size={17}
                     />
                     {mode === "static"
-                      ? "Run static analysis"
-                      : "Run API analysis"}
+                      ? "Run Static Analysis"
+                      : "Run Bedrock Review"}
                     <Icon name="arrow" size={18} />
                   </button>
                 )}
@@ -798,9 +917,11 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                   <h2 id="findings-title">
                     Findings{" "}
                     <span>
-                      {(showConsensus ? validCouncil : validReport)
-                        ? findings.length
-                        : "—"}
+                      {!showFindings && validCouncil
+                        ? validCouncil.findings.length
+                        : (showConsensus ? validCouncil : validReport)
+                          ? findings.length
+                          : "—"}
                     </span>
                   </h2>
                 </div>
@@ -829,95 +950,154 @@ export default function Workspace({ cases }: { cases: Case[] }) {
               </header>
               {mode === "api" && (
                 <div
-                  className="result-view-switch"
+                  ref={reviewStages}
+                  className="review-stages"
                   role="group"
-                  aria-label="Result source"
+                  aria-label="Review stages"
                 >
-                  <button
-                    aria-pressed={resultView === "consensus"}
-                    onClick={() => changeResultView("consensus")}
-                  >
-                    Model consensus{" "}
-                    <span>{validCouncil?.findings.length ?? "—"}</span>
-                  </button>
-                  <button
-                    aria-pressed={resultView === "static"}
-                    onClick={() => changeResultView("static")}
-                  >
-                    Static baseline{" "}
-                    <span>{validReport?.candidates.length ?? "—"}</span>
-                  </button>
-                </div>
-              )}
-              <div className="findings-toolbar">
-                <div
-                  className="severity-filters"
-                  role="group"
-                  aria-label="Severity filter"
-                >
-                  {["ALL", "HIGH", "MEDIUM", "LOW"].map((level) => (
+                  {(
+                    [
+                      ["findings", "Findings"],
+                      ["second", "Second Review"],
+                      ["final", "Final Report"],
+                    ] as const
+                  ).map(([stage, label], index) => (
                     <button
-                      key={level}
-                      aria-pressed={filter === level}
-                      onClick={() => setFilter(level)}
-                    >
-                      {level !== "ALL" && <i className={level.toLowerCase()} />}
-                      {
-                        {
-                          ALL: "All",
-                          HIGH: "High",
-                          MEDIUM: "Medium",
-                          LOW: "Low",
-                        }[level]
+                      key={stage}
+                      aria-label={label}
+                      data-review-stage={stage}
+                      aria-controls="review-stage-content"
+                      aria-current={reviewStage === stage ? "step" : undefined}
+                      aria-pressed={reviewStage === stage}
+                      disabled={
+                        stage === "second"
+                          ? !validCouncil ||
+                            (!stages.secondReviewAvailable && !secondBusy)
+                          : stage === "final"
+                            ? !stages.finalReportAvailable
+                            : false
                       }
-                      <span>
-                        {level === "ALL"
-                          ? findings.length
-                          : findings.filter(
-                              (item) => item.proposed_severity === level,
-                            ).length}
-                      </span>
+                      onClick={() => selectReviewStage(stage)}
+                    >
+                      <span aria-hidden="true">{index + 1}</span>
+                      {label}
                     </button>
                   ))}
                 </div>
-                <label className="findings-search">
-                  <Icon name="search" size={14} />
-                  <input
-                    aria-label="Search findings"
-                    placeholder="Search"
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                  />
-                </label>
-              </div>
-              {showConsensus && (
-                <div className="confidence-toolbar">
-                  <label htmlFor="confidence-filter">
-                    Consensus confidence
-                  </label>
-                  <select
-                    id="confidence-filter"
-                    value={confidence}
-                    onChange={(event) => setConfidence(event.target.value)}
-                  >
-                    <option value="ALL">All confidence levels</option>
-                    <option value="HIGH">High · 3-model agreement</option>
-                    <option value="MEDIUM">Medium · 2-model agreement</option>
-                    <option value="LOW">Low · single model</option>
-                  </select>
-                  {!!validCouncil?.review_queue?.length && (
-                    <button
-                      className="review-queue-filter"
-                      aria-pressed={reviewQueueOnly}
-                      onClick={() => setReviewQueueOnly(!reviewQueueOnly)}
+              )}
+              {showFindings && (
+                <>
+                  <div className="findings-toolbar">
+                    <div
+                      className="severity-filters"
+                      role="group"
+                      aria-label="Severity filter"
                     >
-                      Review queue <span>{reviewQueue.length}</span>
-                    </button>
+                      {["ALL", "HIGH", "MEDIUM", "LOW"].map((level) => (
+                        <button
+                          key={level}
+                          aria-pressed={filter === level}
+                          onClick={() => setFilter(level)}
+                        >
+                          {level !== "ALL" && (
+                            <i className={level.toLowerCase()} />
+                          )}
+                          {
+                            {
+                              ALL: "All",
+                              HIGH: "High",
+                              MEDIUM: "Medium",
+                              LOW: "Low",
+                            }[level]
+                          }
+                          <span>
+                            {level === "ALL"
+                              ? findings.length
+                              : findings.filter(
+                                  (item) => item.proposed_severity === level,
+                                ).length}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    <label className="findings-search">
+                      <Icon name="search" size={14} />
+                      <input
+                        aria-label="Search findings"
+                        placeholder="Search"
+                        value={query}
+                        onChange={(event) => setQuery(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                  {mode === "api" && (
+                    <details className="findings-options">
+                      <summary>
+                        Findings options <Icon name="chevron" size={12} />
+                      </summary>
+                      {mode === "api" && (
+                        <div
+                          className="result-view-switch"
+                          role="group"
+                          aria-label="Result source"
+                        >
+                          <button
+                            aria-pressed={resultView === "consensus"}
+                            onClick={() => changeResultView("consensus")}
+                          >
+                            Model findings{" "}
+                            <span>{validCouncil?.findings.length ?? "—"}</span>
+                          </button>
+                          <button
+                            aria-pressed={resultView === "static"}
+                            onClick={() => changeResultView("static")}
+                          >
+                            Static baseline{" "}
+                            <span>{validReport?.candidates.length ?? "—"}</span>
+                          </button>
+                        </div>
+                      )}
+                      {showConsensus && (
+                        <div className="confidence-toolbar">
+                          <label htmlFor="confidence-filter">
+                            Model agreement
+                          </label>
+                          <select
+                            id="confidence-filter"
+                            value={confidence}
+                            onChange={(event) =>
+                              setConfidence(event.target.value)
+                            }
+                          >
+                            <option value="ALL">All agreement levels</option>
+                            <option value="HIGH">
+                              High · 3-model agreement
+                            </option>
+                            <option value="MEDIUM">
+                              Medium · 2-model agreement
+                            </option>
+                            <option value="LOW">Low · single model</option>
+                          </select>
+                          {!!validCouncil?.review_queue?.length && (
+                            <button
+                              className="review-queue-filter"
+                              aria-pressed={reviewQueueOnly}
+                              onClick={() =>
+                                setReviewQueueOnly(!reviewQueueOnly)
+                              }
+                            >
+                              Review queue <span>{reviewQueue.length}</span>
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </details>
                   )}
-                </div>
+                </>
               )}
               <div
                 ref={findingsView}
+                id="review-stage-content"
                 className="findings-content"
                 aria-live="polite"
                 aria-busy={busy}
@@ -933,273 +1113,342 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                     <div>
                       <strong>
                         {mode === "api"
-                          ? "Three independent reviews in progress"
-                          : "Running static rules"}
+                          ? "Three models are reviewing your contract"
+                          : "Checking common code patterns"}
                       </strong>
                       <span>
                         {mode === "api"
-                          ? "At most two attempts per model. Each model has 180 seconds; the full run is limited to 210 seconds."
-                          : "Checking the current source snapshot."}
+                          ? "This may take a few minutes. You can stop the review at any time."
+                          : "Static Analysis runs in this browser."}
                       </span>
                     </div>
                   </div>
                 )}
-                {showConsensus && validCouncil && (
+                {mode === "api" && validCouncil && (
                   <div className={`consensus-summary ${validCouncil.status}`}>
                     <div className="summary-heading">
-                      <span className="mini-label">EVIDENCE CONSENSUS</span>
                       <span>
-                        {completedModels} / {BEDROCK_MODELS.length} reviews
-                        completed
+                        {completedModels} / {BEDROCK_MODELS.length} model
+                        reviews completed
                       </span>
-                    </div>
-                    <p>
-                      {validCouncil.status === "completed"
-                        ? "Independent reviews reconciled by category and source evidence."
-                        : validCouncil.status === "partial"
-                          ? "Partial coverage. Results from unavailable models are not treated as agreement."
-                          : "No model returned a valid review. Check the model details above and retry."}
-                    </p>
-                    {validCouncil.execution && (
-                      <div className="execution-summary">
-                        <span>
-                          {validCouncil.execution.prompt_variant === "few-shot"
-                            ? "Guided examples"
-                            : "Standard prompt"}
-                        </span>
-                        <span>
-                          {validCouncil.execution.total_attempts} / 6 attempts
-                          used
-                        </span>
-                        <span>
-                          {reviewQueue.length} candidates in review queue
-                        </span>
-                      </div>
-                    )}
-                    <span className="consensus-caption">
-                      Confidence reflects model agreement, not a probability of
-                      exploitability.
-                    </span>
-                  </div>
-                )}
-                {showConsensus && validCouncil?.schema_version === "2.1.0" && (
-                  <SecondReviewPanel
-                    baseline={validCouncil}
-                    report={secondReview}
-                    busy={secondBusy}
-                    attempted={secondAttempted}
-                    blocked={busy || evaluating}
-                    error={secondError}
-                    onRun={() => void runSecondReview()}
-                    onCancel={cancelSecondReview}
-                    onExport={exportReport}
-                    onEvidence={(findingId, evidence) =>
-                      focusCandidate(
-                        findingId,
-                        evidence.line_start,
-                        false,
-                        evidence,
-                      )
-                    }
-                  />
-                )}
-                {showConsensus && !validCouncil && !busy ? (
-                  <div className="empty-state">
-                    <span className="mini-label">
-                      THREE INDEPENDENT PERSPECTIVES
-                    </span>
-                    <h3>Ready for model review</h3>
-                    <p>
-                      Run API analysis to compare the three models.
-                      <br />
-                      Your static baseline remains available in its own view.
-                    </p>
-                  </div>
-                ) : showConsensus && validCouncil?.status === "failed" ? (
-                  <div className="empty-state">
-                    <h3>Model review unavailable</h3>
-                    <p>
-                      Check the errors for each model above.
-                      <br />
-                      You can still inspect the static baseline.
-                    </p>
-                    <button
-                      className="quiet-button"
-                      onClick={() => changeResultView("static")}
-                    >
-                      View static baseline <Icon name="arrow" size={14} />
-                    </button>
-                  </div>
-                ) : !validReport && !busy ? (
-                  <div className="empty-state">
-                    <div className="empty-symbol">
-                      <Icon name="scan" size={28} />
-                    </div>
-                    <h3>Ready for analysis</h3>
-                    <p>Run an analysis to inspect this contract.</p>
-                  </div>
-                ) : !busy && validReport && findings.length === 0 ? (
-                  <div className="empty-state">
-                    <div className="empty-symbol">
-                      <Icon name="check" size={28} />
-                    </div>
-                    <h3>No candidates flagged</h3>
-                    <p>
-                      {showConsensus
-                        ? "The completed models did not flag a source-bound candidate."
-                        : "No matching patterns were found."}
-                      <br />
-                      Manual review is still required.
-                    </p>
-                  </div>
-                ) : shown.length === 0 && !busy ? (
-                  <div className="empty-state">
-                    <Icon name="search" size={24} />
-                    <h3>No matching findings</h3>
-                    <button
-                      className="quiet-button"
-                      onClick={() => {
-                        setFilter("ALL");
-                        setConfidence("ALL");
-                        setReviewQueueOnly(false);
-                        setQuery("");
-                      }}
-                    >
-                      Clear filters
-                    </button>
-                  </div>
-                ) : (
-                  shown.map((item, index) => (
-                    <article
-                      key={item.id}
-                      className={`finding ${expanded === item.id ? "is-expanded" : ""}`}
-                    >
-                      <h3>
-                        <button
-                          className="finding-toggle"
-                          aria-expanded={expanded === item.id}
-                          aria-controls={`detail-${item.id}`}
-                          onClick={() =>
-                            focusCandidate(item.id, item.evidence.line_start)
-                          }
-                        >
-                          <span className="finding-kicker">
-                            <span
-                              className={`severity-pill ${item.proposed_severity.toLowerCase()}`}
-                            >
-                              <i />
-                              {item.proposed_severity}
-                            </span>
-                            <span className="finding-origin">
-                              {item.consensus
-                                ? `${item.consensus.agreement} / ${BEDROCK_MODELS.length} models`
-                                : "Static"}
-                            </span>
-                            <span className="finding-line">
-                              L{item.evidence.line_start}
-                            </span>
-                            <Icon name="chevron" size={15} />
-                          </span>
-                          <span className="finding-title">
-                            <span>{String(index + 1).padStart(2, "0")}</span>
-                            {item.title}
-                          </span>
-                        </button>
-                      </h3>
-                      <div
-                        className="finding-detail"
-                        id={`detail-${item.id}`}
-                        hidden={expanded !== item.id}
-                      >
-                        {item.consensus && (
-                          <div className="consensus-confidence">
-                            <span
-                              className={`confidence-pill ${item.consensus.confidence.toLowerCase()}`}
-                            >
-                              {item.consensus.confidence} CONFIDENCE
-                            </span>
-                            {item.consensus.severity_disagreement && (
-                              <span className="disagreement-note">
-                                Severity differs across models
-                              </span>
-                            )}
-                          </div>
-                        )}
-                        {item.consensus &&
-                          reviewQueue.some(
-                            (entry) => entry.finding_id === item.id,
-                          ) && (
-                            <p className="review-action">
-                              {item.consensus.severity_disagreement
-                                ? "Review priority: compare the proposed severities and assess impact against the cited source."
-                                : "Review priority: inspect each model’s evidence. A missing report or unavailable model does not reject this candidate."}
+                      <details className="review-summary-details">
+                        <summary>
+                          Review details <Icon name="chevron" size={12} />
+                        </summary>
+                        <div>
+                          <p>
+                            First-round agreement counts independent model
+                            findings; it is not an accuracy score. Missing
+                            reviews do not count as agreement.
+                          </p>
+                          {validCouncil.execution && (
+                            <p>
+                              {validCouncil.execution.prompt_variant ===
+                              "few-shot"
+                                ? "Guided examples"
+                                : "Standard prompt"}{" "}
+                              · {validCouncil.execution.total_attempts} / 6
+                              attempts used · {reviewQueue.length} findings in
+                              the review queue.
                             </p>
                           )}
-                        <p>{item.rationale}</p>
-                        <div className="evidence-heading">
-                          <span>SOURCE EVIDENCE</span>
-                          <button
-                            onClick={() =>
-                              focusCandidate(
-                                item.id,
-                                item.evidence.line_start,
-                                false,
-                              )
-                            }
-                          >
-                            Line {item.evidence.line_start}
-                            <Icon name="up" size={12} />
-                          </button>
+                          <p>
+                            Expand a model above for its result, timing and
+                            diagnostic details.
+                          </p>
                         </div>
-                        <pre className="evidence">
-                          <code>{item.evidence.excerpt.trimStart()}</code>
-                        </pre>
-                        <h4>Recommended action</h4>
-                        <p>{item.recommendation}</p>
-                        {item.consensus && validCouncil && (
-                          <ConsensusEvidence
-                            finding={item.consensus}
-                            report={validCouncil}
-                            onEvidence={(evidence) =>
-                              focusCandidate(
-                                item.id,
-                                evidence.line_start,
-                                false,
-                                evidence,
-                              )
-                            }
-                          />
-                        )}
-                        <div className="finding-tags">
-                          <span>{item.rule_id}</span>
-                          <span>{item.category}</span>
-                          <span>Needs review</span>
-                        </div>
+                      </details>
+                    </div>
+                    {validCouncil.status !== "completed" && (
+                      <p className="coverage-caption">
+                        {completedModels
+                          ? "Partial model coverage. Available findings are retained."
+                          : "No model review completed. Static Analysis remains available."}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {mode === "api" &&
+                  reviewStage === "second" &&
+                  validCouncil?.schema_version === "2.1.0" && (
+                    <SecondReviewPanel
+                      baseline={validCouncil}
+                      report={secondReview}
+                      busy={secondBusy}
+                      attempted={secondAttempted}
+                      blocked={busy || evaluating}
+                      error={secondError}
+                      onRun={() => void runSecondReview()}
+                      onCancel={cancelSecondReview}
+                      onExport={exportReport}
+                      onFinalReport={() => selectReviewStage("final")}
+                      onFindings={() => selectReviewStage("findings")}
+                      onPrepareRun={() => {
+                        if (apiKey.current) return true;
+                        apiDialog.current?.showModal();
+                        return false;
+                      }}
+                      onEvidence={(findingId, evidence) =>
+                        focusCandidate(
+                          findingId,
+                          evidence.line_start,
+                          false,
+                          evidence,
+                        )
+                      }
+                    />
+                  )}
+                {mode === "api" &&
+                  reviewStage === "final" &&
+                  stages.finalReportAvailable &&
+                  validCouncil && (
+                    <>
+                      {!secondReview && (
+                        <p className="stage-explanation">
+                          {stages.finalReportReason}
+                        </p>
+                      )}
+                      <FinalReportPanel
+                        autoOpen
+                        baseline={validCouncil}
+                        secondRound={secondReview}
+                        onExport={(format) => void exportReport(format)}
+                        onEvidence={(findingId, evidence) =>
+                          focusCandidate(
+                            findingId,
+                            evidence.line_start,
+                            false,
+                            evidence,
+                          )
+                        }
+                      />
+                    </>
+                  )}
+                {showFindings && (
+                  <>
+                    {showConsensus && !validCouncil && !busy ? (
+                      <div className="empty-state">
+                        <span className="mini-label">
+                          THREE INDEPENDENT PERSPECTIVES
+                        </span>
+                        <h3>Ready for Bedrock Review</h3>
+                        <p>
+                          Select Run Bedrock Review to analyze this contract
+                          with three models. Review the findings before starting
+                          Second Review.
+                        </p>
                       </div>
-                    </article>
-                  ))
+                    ) : showConsensus && validCouncil?.status === "failed" ? (
+                      <div className="empty-state">
+                        <h3>Model review unavailable</h3>
+                        <p>
+                          Check the errors for each model above.
+                          <br />
+                          Static Analysis results remain available.
+                        </p>
+                        <button
+                          className="quiet-button"
+                          onClick={() => changeResultView("static")}
+                        >
+                          View Static Analysis <Icon name="arrow" size={14} />
+                        </button>
+                      </div>
+                    ) : !validReport && !busy ? (
+                      <div className="empty-state">
+                        <div className="empty-symbol">
+                          <Icon name="scan" size={28} />
+                        </div>
+                        <h3>Ready for analysis</h3>
+                        <p>Run an analysis to inspect this contract.</p>
+                      </div>
+                    ) : !busy && validReport && findings.length === 0 ? (
+                      <div className="empty-state">
+                        <div className="empty-symbol">
+                          <Icon name="check" size={28} />
+                        </div>
+                        <h3>No candidates flagged</h3>
+                        <p>
+                          {showConsensus
+                            ? "The completed models did not flag a source-bound candidate."
+                            : "No matching patterns were found."}
+                          <br />
+                          Manual review is still required.
+                        </p>
+                      </div>
+                    ) : shown.length === 0 && !busy ? (
+                      <div className="empty-state">
+                        <Icon name="search" size={24} />
+                        <h3>No matching findings</h3>
+                        <button
+                          className="quiet-button"
+                          onClick={() => {
+                            setFilter("ALL");
+                            setConfidence("ALL");
+                            setReviewQueueOnly(false);
+                            setQuery("");
+                          }}
+                        >
+                          Clear filters
+                        </button>
+                      </div>
+                    ) : (
+                      shown.map((item, index) => (
+                        <article
+                          key={item.id}
+                          className={`finding ${expanded === item.id ? "is-expanded" : ""}`}
+                        >
+                          <h3>
+                            <button
+                              className="finding-toggle"
+                              aria-expanded={expanded === item.id}
+                              aria-controls={`detail-${item.id}`}
+                              onClick={() =>
+                                focusCandidate(
+                                  item.id,
+                                  item.evidence.line_start,
+                                )
+                              }
+                            >
+                              <span className="finding-kicker">
+                                <span
+                                  className={`severity-pill ${item.proposed_severity.toLowerCase()}`}
+                                >
+                                  <i />
+                                  {item.proposed_severity}
+                                </span>
+                                <span className="finding-origin">
+                                  {item.consensus
+                                    ? `${item.consensus.agreement} / ${BEDROCK_MODELS.length} models`
+                                    : "Static"}
+                                </span>
+                                <span className="finding-line">
+                                  L{item.evidence.line_start}
+                                </span>
+                                <Icon name="chevron" size={15} />
+                              </span>
+                              <span className="finding-title">
+                                <span>
+                                  {String(index + 1).padStart(2, "0")}
+                                </span>
+                                {item.title}
+                              </span>
+                            </button>
+                          </h3>
+                          <div
+                            className="finding-detail"
+                            id={`detail-${item.id}`}
+                            hidden={expanded !== item.id}
+                          >
+                            {item.consensus?.severity_disagreement && (
+                              <div className="consensus-confidence">
+                                <span className="disagreement-note">
+                                  Severity differs across models
+                                </span>
+                              </div>
+                            )}
+                            <h4>Risk explanation</h4>
+                            <p>{item.rationale}</p>
+                            <h4>Recommended action</h4>
+                            <p>{item.recommendation}</p>
+                            <details className="finding-evidence-details">
+                              <summary>
+                                Source evidence{" "}
+                                <Icon name="chevron" size={13} />
+                              </summary>
+                              <div className="evidence-heading">
+                                <span>SOURCE EVIDENCE</span>
+                                <button
+                                  onClick={() =>
+                                    focusCandidate(
+                                      item.id,
+                                      item.evidence.line_start,
+                                      false,
+                                    )
+                                  }
+                                >
+                                  Line {item.evidence.line_start}
+                                  <Icon name="up" size={12} />
+                                </button>
+                              </div>
+                              <pre className="evidence">
+                                <code>{item.evidence.excerpt.trimStart()}</code>
+                              </pre>
+                              <div className="finding-tags">
+                                <span>{item.rule_id}</span>
+                                <span>{item.category}</span>
+                              </div>
+                            </details>
+                            {item.consensus && validCouncil && (
+                              <ConsensusEvidence
+                                finding={item.consensus}
+                                report={validCouncil}
+                                onEvidence={(evidence) =>
+                                  focusCandidate(
+                                    item.id,
+                                    evidence.line_start,
+                                    false,
+                                    evidence,
+                                  )
+                                }
+                              />
+                            )}
+                          </div>
+                        </article>
+                      ))
+                    )}
+                  </>
                 )}
               </div>
+              {mode === "api" &&
+                validCouncil &&
+                !busy &&
+                !secondBusy &&
+                reviewStage !== "final" && (
+                  <div className="findings-next-action">
+                    {reviewStage === "findings" &&
+                    !stages.finalReportAvailable ? (
+                      <button
+                        className="second-review-button"
+                        disabled={!stages.secondReviewAvailable}
+                        onClick={() => selectReviewStage("second")}
+                      >
+                        Continue to Second Review{" "}
+                        <Icon name="arrow" size={14} />
+                      </button>
+                    ) : stages.finalReportAvailable ? (
+                      <button
+                        className="second-review-button"
+                        onClick={() => selectReviewStage("final")}
+                      >
+                        Continue to Final Report <Icon name="arrow" size={14} />
+                      </button>
+                    ) : null}
+                  </div>
+                )}
               <footer className="results-footer">
                 <span>
                   <span
                     className={`result-dot ${busy ? "pulsing" : showConsensus && validCouncil && validCouncil.status !== "completed" ? "incomplete" : ""}`}
                   />
-                  {busy
-                    ? "Analysis in progress"
-                    : showConsensus
-                      ? validCouncil
-                        ? validCouncil.status === "completed"
-                          ? "Three-model review complete"
-                          : validCouncil.status === "partial"
-                            ? "Partial model coverage"
-                            : "Model review failed"
-                        : "Awaiting model review"
-                      : validReport
-                        ? validReport.execution === "recorded"
-                          ? "Reference result"
-                          : "Static analysis complete"
-                        : "Awaiting analysis"}
+                  {secondBusy
+                    ? "Second Review in progress"
+                    : busy
+                      ? "Review in progress"
+                      : showConsensus
+                        ? validCouncil
+                          ? validCouncil.status === "completed"
+                            ? secondReview
+                              ? "Final Report available"
+                              : "First-round findings ready"
+                            : validCouncil.status === "partial"
+                              ? "Results available · incomplete model coverage"
+                              : "Model review failed"
+                          : "Awaiting model review"
+                        : validReport
+                          ? validReport.execution === "recorded"
+                            ? "Reference findings"
+                            : "Static Analysis complete"
+                          : "Awaiting analysis"}
                 </span>
                 <span>
                   {elapsed !== null ? `${(elapsed / 1000).toFixed(2)}s` : ""}
@@ -1327,12 +1576,20 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                           <dt>Execution policy</dt>
                           <dd>
                             {validCouncil.execution.policy_version} ·{" "}
-                            {validCouncil.execution.total_attempts} / 6 attempts
+                            {validCouncil.execution.total_attempts} /{" "}
+                            {validCouncil.execution.max_attempts_per_model *
+                              BEDROCK_MODELS.length}{" "}
+                            attempts
                           </dd>
                         </div>
                         <div>
                           <dt>Time limits</dt>
-                          <dd>180 seconds per model · 210 seconds per run</dd>
+                          <dd>
+                            {validCouncil.execution.model_timeout_ms / 1000}{" "}
+                            seconds per model ·{" "}
+                            {validCouncil.execution.overall_timeout_ms / 1000}{" "}
+                            seconds per run
+                          </dd>
                         </div>
                       </>
                     )}
@@ -1426,10 +1683,11 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                 <p>
                   The orchestrator validates each response and its cited source,
                   groups related findings, and preserves each model&apos;s
-                  reasoning. Confidence reflects how many models agree. Missing
-                  models and severity disagreements remain visible in a review
-                  queue. A bounded controller permits one retry for a transient
-                  service response and stops at the model or run deadline.
+                  reasoning. Agreement counts distinct models, not confidence in
+                  correctness. Missing models and severity disagreements remain
+                  visible in a review queue. A bounded controller permits one
+                  retry for a transient service response and stops at the model
+                  or run deadline.
                 </p>
               </div>
             </li>
@@ -1582,8 +1840,10 @@ export default function Workspace({ cases }: { cases: Case[] }) {
             )}
           </div>
           <p className="connection-note">
-            A run starts three model calls and permits one retry per model for a
-            transient service response, up to six calls. Usage is billed to the
+            A run starts three model calls and allows up to{" "}
+            {REVIEW_POLICY.max_attempts_per_model} attempts per model for
+            recoverable service or response-validation errors, up to{" "}
+            {REVIEW_POLICY.max_provider_requests} calls. Usage is billed to the
             AWS account associated with your key.
           </p>
           <div className="connection-footer">

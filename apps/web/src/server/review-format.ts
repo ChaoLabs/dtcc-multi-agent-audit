@@ -2,9 +2,10 @@ import type { ErrorObject } from "ajv";
 import generated from "@/generated/review.schema.json";
 import type { ModelReview, ReviewFinding } from "@/generated/review";
 import { validateReviewEvidence } from "@/lib/report";
+import { sourceLines } from "@/lib/static-analysis";
 
 export type IncomingReviewFinding = Omit<ReviewFinding, "evidence"> & {
-  evidence: Omit<ReviewFinding["evidence"], "validation">;
+  evidence: Pick<ReviewFinding["evidence"], "line_start" | "line_end">;
 };
 
 export type IncomingReviewContent = {
@@ -16,11 +17,11 @@ const incomingEvidenceSchema = {
   ...generated.$defs.Evidence,
   properties: Object.fromEntries(
     Object.entries(generated.$defs.Evidence.properties).filter(
-      ([name]) => name !== "validation",
+      ([name]) => name === "line_start" || name === "line_end",
     ),
   ),
   required: generated.$defs.Evidence.required.filter(
-    (name) => name !== "validation",
+    (name) => name === "line_start" || name === "line_end",
   ),
 };
 
@@ -99,44 +100,60 @@ export const bedrockOutputConfig = {
 
 export const reviewFormatInstructions = `Return one JSON object matching the following complete JSON Schema. All named fields are required; no additional fields are allowed. Respect every string-length, array-size, integer and enum constraint even when the output grammar does not enforce it. Return no Markdown fences or explanation outside the object.
 ${JSON.stringify(reviewContentSchema)}
-Evidence must contain exactly line_start, line_end and excerpt. Cite 1-based inclusive line numbers, at most 12 lines per finding, and reproduce those complete source lines exactly, joined by newline. Do not add a validation field: source binding is checked and recorded by the server. Do not include confidence, model metadata or unsupported severity labels. Use an empty findings array when no source-grounded candidate is identified.`;
+Evidence must contain exactly line_start and line_end. Select 1-based inclusive line numbers, at most 12 complete source lines per finding; the selected text must be non-empty and at most 12000 characters. The application retrieves the exact text from the submitted source. Do not copy an excerpt or add a validation field: source binding is checked and recorded by the server. Do not include confidence, model metadata or unsupported severity labels. Use an empty findings array when no source-grounded candidate is identified.`;
 
-/**
- * Older prompts/models may still return a validation annotation. Ignore that
- * one server-owned field before strict incoming-schema validation. Preserve all
- * actual evidence, findings and other properties without correction or coercion.
- */
-export function normalizeReviewContent(value: unknown): unknown {
-  if (!object(value) || !Array.isArray(value.findings)) return value;
-  return {
-    ...value,
-    findings: value.findings.map((finding) => {
-      if (!object(finding) || !object(finding.evidence)) return finding;
-      return {
-        ...finding,
-        evidence: Object.fromEntries(
-          Object.entries(finding.evidence).filter(
-            ([name]) => name !== "validation",
-          ),
-        ),
-      };
-    }),
-  };
+/** Safe local source rules, never model-authored text or internal exceptions. */
+export class ReviewSourceValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReviewSourceValidationError";
+  }
 }
 
-/** Call only after the strict incoming schema check; never repair model evidence. */
+/** Bind valid model-selected spans to immutable source; never repair a returned quote. */
 export function bindReviewContentToSource(
   content: IncomingReviewContent,
   source: string,
 ): Pick<ModelReview, "summary" | "findings"> {
-  validateReviewEvidence(content.findings, source);
-  return {
-    summary: content.summary,
-    findings: content.findings.map((finding) => ({
+  const lines = sourceLines(source);
+  const seen = new Set<string>();
+  const findings = content.findings.map((finding) => {
+    const { line_start, line_end } = finding.evidence;
+    if (
+      Object.keys(finding.evidence).length !== 2 ||
+      !Number.isSafeInteger(line_start) ||
+      !Number.isSafeInteger(line_end) ||
+      line_start < 1 ||
+      line_end < line_start ||
+      line_end > lines.length ||
+      line_end - line_start >= 12
+    )
+      throw new ReviewSourceValidationError(
+        "Each source citation must use integer line numbers within this source, in ascending order, spanning at most 12 lines.",
+      );
+    const excerpt = lines.slice(line_start - 1, line_end).join("\n");
+    if (!excerpt.trim() || excerpt.length > 12000)
+      throw new ReviewSourceValidationError(
+        "Source span must resolve to a non-empty excerpt of at most 12000 characters.",
+      );
+    const identity = `${finding.title.toLowerCase()}|${line_start}|${line_end}`;
+    if (seen.has(identity))
+      throw new ReviewSourceValidationError(
+        "Do not repeat the same finding title at the same source span.",
+      );
+    seen.add(identity);
+    return {
       ...finding,
-      evidence: { ...finding.evidence, validation: "source-bound" },
-    })),
-  };
+      evidence: {
+        line_start,
+        line_end,
+        excerpt,
+        validation: "source-bound" as const,
+      },
+    };
+  });
+  validateReviewEvidence(findings, source);
+  return { summary: content.summary, findings };
 }
 
 function schemaLocation(

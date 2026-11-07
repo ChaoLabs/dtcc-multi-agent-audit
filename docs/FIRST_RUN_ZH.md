@@ -17,22 +17,26 @@ npm --prefix apps/web run dev
 
 ## 网页内连接 Bedrock
 
-1. 选择 **API analysis**。
+1. 选择参考案例、点击 **Upload contract** 上传合约，或在 **Edit source** 中粘贴代码，再选择 **Bedrock Review**。
 2. 粘贴完整有效的 Bedrock API Key，不含 `export` 命令或引号。
-3. 点击 **Use API key**，然后点击 **Run API analysis**。
-4. 默认调用 GPT-6 Astra，区域 `us-east-1`，模型 ID `us.openai.gpt-6-astra`。账户需要有该模型的调用权限。
+3. 点击 **Use API key**，再点击 **Run Bedrock Review**。完成后先查看 **Findings**，不会自动进入第二轮。
+4. 打开 **Second Review**，检查分配的复核任务，再点击 **Run Second Review**。收到有效的第二轮报告后点击 **View Final Report** 直接打开最终报告；部分有效结果也可进入最终报告。若没有可执行的复核任务，页面会说明原因。取消或请求失败不会被算作已完成第二轮，初轮结果和导出仍保留。区域为 `us-east-1`，三个固定模型为 GPT-6.1 Sol、Claude Opus 5.5 和 Grok 4.7，账户须具备对应调用权限。
 5. Key 仅保留在当前标签页内存及当前服务端请求中。刷新页面或点击 **Clear key** 后需要重新输入。应用不会写入浏览器存储、Cookie、日志或仓库。
 
 添加 Key 只验证格式，成功返回模型分析才说明 AWS 调用成功。分析时 Key 与源码经本站服务端发往 AWS；模型费用归 Key 所属 AWS 账户，Vercel 运行费用归部署账户。不要分享包含 Key 或请求正文的截图。
 
 ## 功能验收
 
-- 不输入 Key，运行静态检测，检查源码、候选项和 JSON/Markdown 导出。
-- 输入 Key 后运行 API 分析，确认 GPT-6 Astra 的模型信息和独立模型结果。
+- 不输入 Key，点击 **Static Analysis → Run Static Analysis**，检查源码、候选项和 JSON/Markdown 导出。
+- 输入 Key 后点击 **Run Bedrock Review**，确认先显示初轮 Findings，再手动执行 Second Review，最后查看 Final Report。
+- 最终报告先看风险概览、风险解释和建议处理方式；需要追溯时再展开模型判断与源码证据。第二轮未完成时，已接受的首轮判断和严重程度仍保留，并明确标注待复核；不会把旧判断计成新回答。
+- 区分“分配的复核任务完成”和“三模型覆盖完整”。两份初次结果加两份复核结果，整体仍只有 2/3 模型覆盖。
+- 若显示内容过滤或 guardrail 阻止，保留其他结果并按提示联系 AWS 管理员确认允许的使用场景。刷新、更换 Key 或延长超时不保证解决；应用不会重写输入或重复请求来绕过过滤。
 - Key 过期或没有权限时，应保留静态结果并明确报错。
 - 修改源码、更换案例或取消分析后，旧请求不能覆盖新内容。
 - 点击 Clear key 或刷新页面，确认不会自动恢复凭据。
-- 打开 Documentation PDF 和 Connection guide，确认同站点链接与移动端布局。
+- 打开 Documentation 的八页平台说明、三页编排设计及 Connection guide；文件标题和正文不显示日期。
+- 通过 **Review settings → Validate 5 cases** 做五合约验证。批量验证有独立的复核开关及调用上限，与工作区的手动第二轮操作独立，必须明确启动批量验证。
 
 ## 开发检查
 

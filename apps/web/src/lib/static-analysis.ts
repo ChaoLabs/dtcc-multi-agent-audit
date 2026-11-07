@@ -1,6 +1,8 @@
 import type { AuditReport, Candidate } from "@/generated/report";
 import catalog from "@/generated/rule-catalog.json";
 
+export const STATIC_ENGINE_VERSION = "0.1.1" as const;
+
 export const sourceLines = (source: string) => {
   const lines = source.split(/\r\n|\r|\n/);
   if (lines.at(-1) === "") lines.pop();
@@ -34,6 +36,46 @@ export function validateInput(filename: string, source: string) {
     throw new Error("Source exceeds 1,200 lines or 2,000 characters per line.");
 }
 
+/** Replace comment/literal text with spaces while preserving offsets and line endings. */
+export function maskNonCode(source: string): string {
+  // Index UTF-16 code units, as the regex scanner does; never alter source evidence.
+  const chars = source.split("");
+  let state: "code" | "line" | "block" | "string" = "code";
+  let quote = "";
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    const following = source[i + 1];
+    if (state === "code") {
+      if (char === "/" && (following === "/" || following === "*")) {
+        state = following === "/" ? "line" : "block";
+        chars[i] = chars[i + 1] = " ";
+        i++;
+      } else if (char === '"' || char === "'") {
+        quote = char;
+        state = "string";
+        chars[i] = " ";
+      }
+    } else if (state === "line") {
+      if (char === "\r" || char === "\n") state = "code";
+      else chars[i] = " ";
+    } else if (state === "block") {
+      if (char === "*" && following === "/") {
+        chars[i] = chars[i + 1] = " ";
+        state = "code";
+        i++;
+      } else if (char !== "\r" && char !== "\n") chars[i] = " ";
+    } else {
+      if (char !== "\r" && char !== "\n") chars[i] = " ";
+      if (char === "\\") {
+        if (following !== undefined && following !== "\r" && following !== "\n")
+          chars[i + 1] = " ";
+        i++;
+      } else if (char === quote) state = "code";
+    }
+  }
+  return chars.join("");
+}
+
 type Rule = keyof typeof catalog;
 type Match = { rule: Rule; line: number };
 /** Browser port of the inherited 15 rule heuristics. No compilation or network I/O. */
@@ -42,7 +84,9 @@ export async function analyzeStatic(
   source: string,
 ): Promise<AuditReport> {
   validateInput(filename, source);
-  const lines = sourceLines(source);
+  const originalLines = sourceLines(source);
+  const code = maskNonCode(source);
+  const lines = sourceLines(code);
   const funcs: { name: string; start: number; end: number }[] = [];
   for (let i = 0; i < lines.length; i++) {
     const match = /\b(function\s+(\w+)|constructor|fallback|receive)\b/.exec(
@@ -71,20 +115,37 @@ export async function analyzeStatic(
     if (!found.some((item) => item.rule === rule && item.line === line))
       found.push({ rule, line });
   };
-  if (!/\bpragma\s+solidity\b/.test(source)) add("SC-008", 1);
+  if (!/\bpragma\s+solidity\b/.test(code)) add("SC-008", 1);
   const writes = lines.flatMap((line, i) =>
-    /balances\[.*\]\s*(=|-=|\+=)/.test(line) ? [i + 1] : [],
+    /balances\s*\[.*\]\s*(=|-=|\+=)/.test(line) ? [i + 1] : [],
   );
+  const valueCalls = new Map<number, string[]>();
+  for (const match of code.matchAll(/\.call\s*\{\s*value\s*:/g)) {
+    const preceding = code.slice(0, match.index);
+    const line = (preceding.match(/\r\n|\r|\n/g)?.length ?? 0) + 1;
+    const statementStart =
+      Math.max(...[";", "{", "}"].map((char) => preceding.lastIndexOf(char))) +
+      1;
+    valueCalls.set(line, [
+      ...(valueCalls.get(line) ?? []),
+      preceding.slice(statementStart),
+    ]);
+  }
   let randomness = false,
     parity = false;
   lines.forEach((line, index) => {
     const n = index + 1;
-    if (line.trim().startsWith("//") || line.trim().startsWith("*")) return;
-    if (/\.call\{value:/.test(line)) {
+    if (valueCalls.has(n)) {
       const fn = funcs.find((fn) => fn.start <= n && n <= fn.end);
       if (fn && writes.some((w) => fn.start <= w && w <= fn.end && w > n))
         add("SC-001", n);
-      if (!line.split(".call")[0].includes("=") && !/\brequire\s*\(/.test(line))
+      if (
+        valueCalls
+          .get(n)!
+          .some(
+            (prefix) => !prefix.includes("=") && !/\brequire\s*\(/.test(prefix),
+          )
+      )
         add("SC-002", n);
     }
     if (
@@ -97,13 +158,13 @@ export async function analyzeStatic(
     if (line.includes("tx.origin") && /require|==|if/.test(line))
       add("SC-005", n);
     if (/selfdestruct\s*\(/.test(line)) add("SC-006", n);
-    if (/pragma solidity\s*\^?0\.[4-7]\./.test(line)) add("SC-007", n);
+    if (/pragma\s+solidity\s*\^?0\.[4-7]\./.test(line)) add("SC-007", n);
     if (
       !randomness &&
       /\b(blockhash|block\.timestamp|block\.difficulty|block\.prevrandao|block\.number)\b/.test(
         line,
       ) &&
-      /\b(random|guess|answer|keccak256|winner|lottery)\b/i.test(source)
+      /\b(random|guess|answer|keccak256|winner|lottery)\b/i.test(code)
     ) {
       add("SC-009", n);
       randomness = true;
@@ -113,7 +174,7 @@ export async function analyzeStatic(
       !parity &&
       /players\s*\[\s*\w+\s*%\s*2\s*\]/.test(line) &&
       /players\s*\[\s*0\s*\]\.number\s*\+\s*players\s*\[\s*1\s*\]\.number/.test(
-        source,
+        code,
       )
     ) {
       add("SC-011", n);
@@ -148,7 +209,7 @@ export async function analyzeStatic(
       /require|if|transfer|call|winner|release|unlock/i.test(line)
     )
       add("SC-013", n);
-    if (/\.(transfer|send)\s*\(|\.call\s*\{\s*value/.test(line)) {
+    if (/\.(transfer|send)\s*\(/.test(line) || valueCalls.has(n)) {
       const fn = funcs.find((fn) => fn.start <= n && n <= fn.end);
       if (fn) {
         const header = lines[fn.start - 1],
@@ -179,7 +240,9 @@ export async function analyzeStatic(
       proposed_severity: catalog[rule]
         .proposed_severity as Candidate["proposed_severity"],
       id: (
-        await sha256(`browser-static-rules@0.1.0|${hash}|${rule}|${line}`)
+        await sha256(
+          `browser-static-rules@${STATIC_ENGINE_VERSION}|${hash}|${rule}|${line}`,
+        )
       ).slice(0, 24),
       rule_id: rule,
       disposition: "needs-review",
@@ -187,7 +250,7 @@ export async function analyzeStatic(
       evidence: {
         line_start: line,
         line_end: line,
-        excerpt: lines[line - 1],
+        excerpt: originalLines[line - 1],
         validation: "source-bound",
       },
     })),
@@ -199,7 +262,7 @@ export async function analyzeStatic(
     execution: "browser",
     mode: "static",
     engine: "browser-static-rules",
-    engine_version: "0.1.0",
+    engine_version: STATIC_ENGINE_VERSION,
     source_sha256: hash,
     input: { filename, source },
     candidates,
@@ -211,7 +274,7 @@ export async function analyzeStatic(
     ],
     limitations: [
       "Browser port of 15 inherited regex rules; not an AST or compiler.",
-      "Comments, naming and formatting can cause false positives and misses.",
+      "Comments and quoted literals are masked; naming, formatting and scope heuristics can still cause false positives and misses.",
       "Source-bound evidence proves a location, not exploitability. All candidates require review.",
       "No Bedrock model or multi-agent orchestration ran. No findings does not mean safe.",
     ],

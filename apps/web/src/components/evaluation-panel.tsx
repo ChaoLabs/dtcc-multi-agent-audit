@@ -3,10 +3,13 @@ import {
   EVALUATION_CASES,
   runEvaluation,
   downloadEvaluation,
+  importEvaluationJSON,
+  MAX_EVALUATION_IMPORT_BYTES,
   type EvaluationReport,
 } from "@/lib/evaluation";
 import type { PromptVariant } from "@/lib/review-policy";
 import { Icon } from "./icons";
+import { EvaluationAdjudication } from "./evaluation-adjudication";
 
 const promptLabel = (variant: PromptVariant) =>
   variant === "few-shot" ? "Guided examples" : "Standard";
@@ -36,9 +39,9 @@ export function EvaluationPanel({
   const [report, setReport] = useState<EvaluationReport | null>(null);
   const [error, setError] = useState("");
   const [includeSecondReview, setIncludeSecondReview] = useState(false);
-  const [history, setHistory] = useState<
-    Partial<Record<string, EvaluationReport>>
-  >({});
+  const [history, setHistory] = useState<EvaluationReport[]>([]);
+  const importInput = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -73,12 +76,7 @@ export function EvaluationPanel({
       });
       if (mounted.current) {
         setReport(result);
-        if (result.status === "completed") {
-          setHistory((previous) => ({
-            ...previous,
-            [`${result.prompt_variant}:${result.review_mode}`]: result,
-          }));
-        }
+        setHistory((previous) => [...previous, result].slice(-10));
       }
     } catch {
       if (mounted.current)
@@ -97,14 +95,55 @@ export function EvaluationPanel({
   const comparisonMode = includeSecondReview
     ? "paired-second-review"
     : "independent";
-  const baseline = history[`baseline:${comparisonMode}`];
-  const guided = history[`few-shot:${comparisonMode}`];
+  const baseline = [...history]
+    .reverse()
+    .find(
+      (item) =>
+        item.prompt_variant === "baseline" &&
+        item.review_mode === comparisonMode &&
+        item.status === "completed",
+    );
+  const guided = [...history]
+    .reverse()
+    .find(
+      (item) =>
+        item.prompt_variant === "few-shot" &&
+        item.review_mode === comparisonMode &&
+        item.status === "completed",
+    );
+  async function importRun(file: File) {
+    setImporting(true);
+    setError("");
+    try {
+      if (file.size > MAX_EVALUATION_IMPORT_BYTES) throw new Error("file size");
+      const imported = await importEvaluationJSON(await file.text());
+      setReport(imported);
+      setHistory((previous) =>
+        [
+          ...previous.filter(
+            (item) =>
+              !(
+                item.created_at === imported.created_at &&
+                item.prompt_variant === imported.prompt_variant &&
+                item.review_mode === imported.review_mode
+              ),
+          ),
+          imported,
+        ].slice(-10),
+      );
+    } catch {
+      setError(
+        "The saved run could not be imported. Choose a validation JSON export for these exact five contracts. Maximum file size: 5 MB.",
+      );
+    } finally {
+      setImporting(false);
+    }
+  }
   return (
     <dialog
       ref={dialogRef}
       className="modal evaluation-modal"
       aria-labelledby="evaluation-title"
-      onClose={() => requestRef.current?.abort()}
     >
       <header>
         <div>
@@ -125,6 +164,62 @@ export function EvaluationPanel({
           the same three models and evidence checks. Completed results remain
           available if you stop the run.
         </p>
+        <div className="validation-history">
+          <button
+            className="quiet-button"
+            disabled={busy || analysisBusy || importing}
+            onClick={() => importInput.current?.click()}
+          >
+            Import saved run
+          </button>
+          <input
+            ref={importInput}
+            type="file"
+            accept=".json,application/json"
+            aria-label="Import saved validation run"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file) void importRun(file);
+            }}
+          />
+          {history.length > 0 && (
+            <label>
+              Recent runs in this tab
+              <select
+                aria-label="Select validation run"
+                disabled={busy || analysisBusy || importing}
+                value={report ? history.indexOf(report) : -1}
+                onChange={(event) => {
+                  const selected = history[Number(event.target.value)];
+                  if (selected) {
+                    setReport(selected);
+                    setError("");
+                  }
+                }}
+              >
+                <option value={-1} disabled>
+                  Current run
+                </option>
+                {history.map((item, index) => (
+                  <option key={`${item.created_at}:${index}`} value={index}>
+                    Run {index + 1} · {promptLabel(item.prompt_variant)} ·{" "}
+                    {item.review_mode === "paired-second-review"
+                      ? "Paired"
+                      : "Independent"}{" "}
+                    · {item.status}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <p>
+            Up to 10 runs stay in this tab’s memory. Download runs before
+            refreshing. Imported reports are source-checked; metrics are
+            recomputed.
+          </p>
+        </div>
         <div className="validation-controls">
           <label htmlFor="validation-prompt">Validation prompt</label>
           <select
@@ -273,7 +368,7 @@ export function EvaluationPanel({
                 <strong>
                   {report.metrics.second_review.unresolved_candidates}
                 </strong>
-                <span>Unresolved disagreements</span>
+                <span>Unresolved findings</span>
               </div>
             </div>
             <p>
@@ -281,8 +376,9 @@ export function EvaluationPanel({
               attempts · {report.metrics.second_review.skipped_cases} skipped
               cases · {report.metrics.second_review.failed_cases} failed cases ·{" "}
               {report.metrics.second_review.deferred_candidates} deferred
-              candidates. Opinion changes do not measure accuracy; original
-              agreement stays unchanged.
+              candidates. Unresolved findings can reflect missing reviews as
+              well as differing judgments. Opinion changes do not measure
+              accuracy; original agreement stays unchanged.
             </p>
           </section>
         )}
@@ -326,6 +422,10 @@ export function EvaluationPanel({
             </p>
           </section>
         )}
+        <EvaluationAdjudication
+          report={busy ? null : report}
+          disabled={busy || analysisBusy || importing}
+        />
         {error && (
           <div className="error" role="alert">
             {error}
@@ -343,7 +443,7 @@ export function EvaluationPanel({
           ) : hasKey ? (
             <button
               className="primary-button"
-              disabled={analysisBusy}
+              disabled={analysisBusy || importing}
               onClick={() => void run()}
             >
               Run five-case validation

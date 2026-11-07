@@ -1,3 +1,4 @@
+import { REVIEW_CLIENT_TIMEOUT_MS } from "@/lib/review-policy";
 import { validateApiKey } from "@/lib/bedrock-config";
 import type { CouncilReport } from "@/lib/orchestration";
 import {
@@ -11,6 +12,7 @@ export class SecondReviewRequestError extends Error {
     message: string,
     readonly status: number | null = null,
     readonly code = "second_review_failed",
+    readonly safeToRetry = false,
   ) {
     super(message);
     this.name = "SecondReviewRequestError";
@@ -43,7 +45,7 @@ export async function requestSecondReview({
 }): Promise<SecondReviewReport> {
   const key = validateApiKey(apiKey);
   const deadline = new AbortController();
-  const timer = setTimeout(() => deadline.abort(), 235_000);
+  const timer = setTimeout(() => deadline.abort(), REVIEW_CLIENT_TIMEOUT_MS);
   const bounded = AbortSignal.any([signal, deadline.signal]);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let rejectAbort: (error: unknown) => void = () => {};
@@ -76,22 +78,69 @@ export async function requestSecondReview({
     });
     const response = await Promise.race([pending, interrupted]);
     if (!response.ok) {
-      void response.body?.cancel().catch(() => {});
+      // A recovery is allowed only for an explicit admission rejection before
+      // any provider call. Read a small bounded body, never display its text.
+      let admission: unknown;
+      if ([409, 429].includes(response.status) && response.body) {
+        reader = response.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        try {
+          while (true) {
+            const part = await Promise.race([reader.read(), interrupted]);
+            if (part.done) break;
+            size += part.value.byteLength;
+            if (size > 4096) break;
+            chunks.push(part.value);
+          }
+          if (size <= 4096) {
+            const bytes = new Uint8Array(size);
+            let offset = 0;
+            for (const chunk of chunks) {
+              bytes.set(chunk, offset);
+              offset += chunk.byteLength;
+            }
+            admission = JSON.parse(new TextDecoder().decode(bytes));
+          }
+        } catch {
+          // Malformed or interrupted errors never authorize a repeated call.
+        } finally {
+          void reader.cancel().catch(() => {});
+          reader.releaseLock();
+          reader = undefined;
+        }
+      } else {
+        void response.body?.cancel().catch(() => {});
+      }
+      const safeToRetry =
+        typeof admission === "object" &&
+        admission !== null &&
+        "code" in admission &&
+        admission.code === "busy" &&
+        "provider_calls_started" in admission &&
+        admission.provider_calls_started === 0 &&
+        "retry_safe" in admission &&
+        admission.retry_safe === true;
       const access = [401, 403].includes(response.status);
       throw new SecondReviewRequestError(
-        access
-          ? "Second review was denied. Check the Bedrock connection. The independent review is retained."
-          : response.status === 429
-            ? "Second review reached a rate limit. The independent review is retained."
-            : response.status === 413
-              ? "The review exceeds the second-round size limit. Keep the independent report for manual review."
-              : "Second review did not return a valid result. The independent review is retained.",
+        safeToRetry
+          ? "The service is busy; no model calls were started. Wait briefly, then retry admission once."
+          : access
+            ? "Second review was denied. Check the Bedrock connection. The independent review is retained."
+            : response.status === 429
+              ? "Second review reached a rate limit. The independent review is retained."
+              : response.status === 413
+                ? "The review exceeds the second-round size limit. Keep the independent report for manual review."
+                : "Second review did not return a valid result. The independent review is retained.",
         response.status,
-        access
-          ? "access"
-          : response.status === 429
-            ? "rate_limit"
-            : "request_failed",
+        safeToRetry
+          ? "busy"
+          : access
+            ? "access"
+            : response.status === 429
+              ? "rate_limit"
+              : "request_failed",
+        safeToRetry,
       );
     }
     if (!response.body) throw new Error("Empty response");
