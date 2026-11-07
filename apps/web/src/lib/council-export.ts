@@ -100,6 +100,7 @@ export function councilMarkdown(report: AuditReport, council: CouncilReport) {
             : "No model candidates were retained. This does not establish contract safety.",
         ]),
     "## Independent static baseline",
+    "This appendix records only the separate on-device static analysis. Its execution-stage statuses and limitations do not describe the Bedrock reviews above.",
     markdownReport(report),
   ].join("\n\n");
 }

@@ -9,6 +9,7 @@ import {
 } from "@/lib/second-review";
 import {
   buildFinalReviewReport,
+  currentModelSeverities,
   type FinalModelJudgment,
   type FinalFinding,
 } from "@/lib/final-report";
@@ -340,38 +341,54 @@ export function FinalReportPanel({
                         <th scope="col">First round</th>
                         <th scope="col">Second round</th>
                         <th scope="col">Latest valid opinion</th>
+                        <th scope="col">Proposed severity</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {finding.judgments.map((judgment) => (
-                        <tr key={judgment.model_id}>
-                          <th scope="row">{judgment.label}</th>
-                          <td>
-                            {judgment.first_round === "reported"
-                              ? "Reported"
-                              : judgment.first_round === "not_reported"
-                                ? "Not reported"
-                                : "Unavailable"}
-                          </td>
-                          <td>{secondLabels[judgment.second_round]}</td>
-                          <td>
-                            {judgment.effective_verdict === "supported"
-                              ? "Supports"
-                              : judgment.effective_verdict === "not_supported"
-                                ? "Does not support"
-                                : judgment.effective_verdict === "uncertain"
-                                  ? "Uncertain"
-                                  : "Unknown"}
-                            <small>
-                              {judgment.opinion_source === "first_round"
-                                ? "Original finding retained"
-                                : judgment.opinion_source === "second_round"
-                                  ? "Peer-informed judgment"
-                                  : "No accepted judgment"}
-                            </small>
-                          </td>
-                        </tr>
-                      ))}
+                      {finding.judgments.map((judgment) => {
+                        const severities = currentModelSeverities(
+                          baseline,
+                          finding.id,
+                          judgment,
+                        );
+                        return (
+                          <tr key={judgment.model_id}>
+                            <th scope="row">{judgment.label}</th>
+                            <td>
+                              {judgment.first_round === "reported"
+                                ? "Reported"
+                                : judgment.first_round === "not_reported"
+                                  ? "Not reported"
+                                  : "Unavailable"}
+                            </td>
+                            <td>{secondLabels[judgment.second_round]}</td>
+                            <td>
+                              {judgment.effective_verdict === "supported"
+                                ? "Supports"
+                                : judgment.effective_verdict === "not_supported"
+                                  ? "Does not support"
+                                  : judgment.effective_verdict === "uncertain"
+                                    ? "Uncertain"
+                                    : "Unknown"}
+                              <small>
+                                {judgment.opinion_source === "first_round"
+                                  ? "Original finding retained"
+                                  : judgment.opinion_source === "second_round"
+                                    ? "Peer-informed judgment"
+                                    : "No accepted judgment"}
+                              </small>
+                            </td>
+                            <td>
+                              {severities.length
+                                ? severities.join(" / ")
+                                : "Not rated"}
+                              {severities.length > 1 && (
+                                <small>Original ratings differ</small>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

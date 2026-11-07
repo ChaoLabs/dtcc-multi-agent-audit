@@ -10,7 +10,10 @@ import {
   secondReviewReasoningEffort,
   type SecondReviewReport,
 } from "@/lib/second-review";
-import { buildFinalReviewReport } from "@/lib/final-report";
+import {
+  buildFinalReviewReport,
+  currentModelSeverities,
+} from "@/lib/final-report";
 import { sha256 } from "@/lib/static-analysis";
 
 const interpretation =
@@ -187,12 +190,19 @@ function consolidatedMarkdown(
             ]
           : []),
         [
-          "| Model | First round | Second round | Effective judgment | Opinion source |",
-          "| --- | --- | --- | --- | --- |",
-          ...finding.judgments.map(
-            (item) =>
-              `| ${literal(item.label)} | ${item.first_round} | ${item.second_round} | ${item.effective_verdict} | ${item.opinion_source} |`,
-          ),
+          "| Model | First round | Second round | Effective judgment | Opinion source | Proposed severity |",
+          "| --- | --- | --- | --- | --- | --- |",
+          ...finding.judgments.map((item) => {
+            const severities = currentModelSeverities(
+              baseline,
+              finding.id,
+              item,
+            );
+            const severity = severities.length
+              ? `${severities.join(" / ")}${severities.length > 1 ? " (original ratings differ)" : ""}`
+              : "Not rated";
+            return `| ${literal(item.label)} | ${item.first_round} | ${item.second_round} | ${item.effective_verdict} | ${item.opinion_source} | ${severity} |`;
+          }),
         ].join("\n"),
         `Source evidence: lines ${finding.evidence.line_start}–${finding.evidence.line_end}\nFinding ID: ${finding.id}`,
         fence(finding.evidence.excerpt, "solidity"),

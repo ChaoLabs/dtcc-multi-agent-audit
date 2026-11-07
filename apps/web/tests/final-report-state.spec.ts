@@ -58,6 +58,72 @@ async function failedReassessment(
   return buildSecondReviewReport(models, source, baseline, 180_001);
 }
 
+test("final findings follow current severity, retain stable ties, and leave both round records unchanged", async () => {
+  const initial = await syntheticBaseline(source);
+  const original = initial.models[0].review!.findings[0];
+  const models = structuredClone(initial.models);
+  for (const [index, model] of models.entries()) {
+    model.review!.findings = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"].map(
+      (title) => ({
+        ...structuredClone(original),
+        title,
+        proposed_severity: index === 2 ? "HIGH" : "LOW",
+      }),
+    );
+  }
+  const baseline = await buildCouncilReport(
+    models,
+    source,
+    3,
+    initial.execution,
+  );
+  expect(baseline.findings).toHaveLength(5);
+  const before = baseline.findings.map((finding) => finding.id);
+  const complete = await syntheticSecondReview(source, baseline);
+  const secondModels = structuredClone(complete.models);
+  const severities = ["LOW", null, "MEDIUM", "HIGH", "MEDIUM"] as const;
+  for (const model of secondModels) {
+    for (const assessment of model.review!.assessments) {
+      const severity = severities[before.indexOf(assessment.finding_id)];
+      assessment.verdict = severity === null ? "not_supported" : "supported";
+      assessment.proposed_severity = severity;
+    }
+  }
+  const second = await buildSecondReviewReport(
+    secondModels,
+    source,
+    baseline,
+    3,
+  );
+  const snapshot = JSON.stringify({ baseline, second });
+  const final = buildFinalReviewReport(baseline, second);
+
+  expect(final.findings.map((finding) => finding.id)).toEqual([
+    before[3],
+    before[2],
+    before[4],
+    before[0],
+    before[1],
+  ]);
+  expect(final.findings.map((finding) => finding.proposed_severity)).toEqual([
+    "HIGH",
+    "MEDIUM",
+    "MEDIUM",
+    "LOW",
+    null,
+  ]);
+  expect(final.summary).toMatchObject({
+    high: 1,
+    medium: 2,
+    low: 1,
+    unrated: 1,
+  });
+  expect(JSON.stringify({ baseline, second })).toBe(snapshot);
+  expect(await validateSecondReviewReport(second, source, baseline)).toEqual(
+    second,
+  );
+});
+
 test("a failed severity reassessment cannot erase accepted support or lower its retained severity", async () => {
   const baseline = await severityDispute();
   const second = await failedReassessment(baseline);
@@ -181,6 +247,13 @@ test("the final risk report includes readable rationale and actions without rewr
   expect(markdown).toContain("Proposed severity: 1 high");
   expect(markdown).toContain("Second Review: 2/3 assigned models completed");
   expect(markdown).toContain("Latest available support: 3/3 models");
+  expect(markdown).toContain("| Opinion source | Proposed severity |");
+  expect(markdown).toContain(
+    "| GPT-6\\.1 Sol | reported | supported | supported | second_round | LOW |",
+  );
+  expect(markdown).toContain(
+    "| Grok 4\\.7 | reported | failed | supported | first_round | HIGH |",
+  );
   expect(markdown).toContain("Original accepted rationale from Grok 4\\.7\\.");
   expect(markdown).toContain(
     "Review the affected operation before deployment\\.",
@@ -215,6 +288,9 @@ test("explicit unanimous rejection leaves original explanation available without
     "Original recommendation — evaluate before acting",
   );
   expect(markdown).toContain("Original accepted rationale from Grok 4\\.7\\.");
+  expect(markdown).toContain(
+    "| Grok 4\\.7 | reported | not_supported | not_supported | second_round | Not rated |",
+  );
 });
 
 test("downloaded JSON versions the new final view while preserving both original rounds byte for byte", async () => {

@@ -93,6 +93,83 @@ test("consolidated UI keeps missing opinions unknown before a peer round", async
   expect(markup.match(/No accepted judgment/g)).toHaveLength(2);
   expect(markup).toContain("Unresolved");
   expect(markup).not.toContain("Does not support</td>");
+  expect(markup.match(/<td>Not rated<\/td>/g)).toHaveLength(2);
+});
+
+test("model severity details retain conflicting original ratings until an accepted reassessment supersedes them", async () => {
+  const reviewSource =
+    'pragma solidity ^0.8.20;\ncontract C { function payout(address target) external { target.call(""); } }\n';
+  const initial = await syntheticBaseline(reviewSource);
+  const original = initial.models[0].review!.findings[0];
+  const models = structuredClone(initial.models);
+  for (const [index, model] of models.entries()) {
+    model.review!.findings = [
+      {
+        ...structuredClone(original),
+        category: "unchecked-call",
+        title: "Unchecked payout result",
+        proposed_severity: index === 2 ? "HIGH" : "LOW",
+        evidence: {
+          line_start: 2,
+          line_end: 2,
+          excerpt: reviewSource.split("\n")[1],
+          validation: "source-bound",
+        },
+      },
+    ];
+  }
+  models[2].review!.findings.push({
+    ...structuredClone(models[2].review!.findings[0]),
+    title: "Alternate severity for the same unchecked payment",
+    proposed_severity: "LOW",
+  });
+  const baseline = await buildCouncilReport(
+    models,
+    reviewSource,
+    3,
+    initial.execution,
+  );
+  expect(baseline.findings).toHaveLength(1);
+  expect(baseline.findings[0].members).toHaveLength(4);
+  const complete = await syntheticSecondReview(reviewSource, baseline);
+  const failedModels = structuredClone(complete.models);
+  const failed = failedModels.find((model) => model.label === "Grok 4.7")!;
+  failed.status = "failed";
+  failed.review = null;
+  failed.error = { code: "timeout", detail: "Model time limit reached." };
+  failed.attempts[0].status = "failed";
+  failed.attempts[0].error_code = "timeout";
+  const partial = await buildSecondReviewReport(
+    failedModels,
+    reviewSource,
+    baseline,
+    3,
+  );
+  const partialMarkup = renderReport({ baseline, secondRound: partial });
+  const grokRow = (markup: string) =>
+    markup.match(/<tr><th scope="row">Grok 4\.7<\/th>[\s\S]*?<\/tr>/)![0];
+  expect(partialMarkup).toContain('<th scope="col">Proposed severity</th>');
+  expect(grokRow(partialMarkup)).toContain("Original finding retained");
+  expect(grokRow(partialMarkup)).toContain(
+    "HIGH / LOW<small>Original ratings differ</small>",
+  );
+  expect(partialMarkup).toContain('<details class="final-model-details">');
+
+  const reassessed = structuredClone(complete.models);
+  reassessed.find(
+    (model) => model.label === "Grok 4.7",
+  )!.review!.assessments[0].proposed_severity = "MEDIUM";
+  const second = await buildSecondReviewReport(
+    reassessed,
+    reviewSource,
+    baseline,
+    3,
+  );
+  const markup = renderReport({ baseline, secondRound: second });
+  expect(grokRow(markup)).toContain("Peer-informed judgment");
+  expect(grokRow(markup)).toContain("<td>MEDIUM</td>");
+  expect(grokRow(markup)).not.toContain("Original ratings differ");
+  expect(grokRow(markup)).not.toContain("HIGH");
 });
 
 test("model-controlled report text is escaped and never interpreted as HTML", async () => {

@@ -12,6 +12,7 @@ import {
   type ExecutionProvenance,
 } from "../src/lib/orchestration";
 import { councilMarkdown } from "../src/lib/council-export";
+import { markdownReport } from "../src/lib/report";
 import { analyzeStatic, sha256, sourceLines } from "../src/lib/static-analysis";
 import {
   POLICY_VERSION,
@@ -815,10 +816,8 @@ test("Markdown exports execution limits, full contribution provenance and separa
     ...execution(),
     prompt_variant: "few-shot",
   });
-  const text = councilMarkdown(
-    await analyzeStatic("Vault.sol", source),
-    report,
-  );
+  const staticReport = await analyzeStatic("Vault.sol", source);
+  const text = councilMarkdown(staticReport, report);
   expect(text).toContain(`Prompt: ${PROMPT_VERSION} / few-shot`);
   expect(text).toContain("Requests made: 3 / 9 maximum");
   expect(text).toContain("Attempt 1: succeeded");
@@ -834,6 +833,10 @@ test("Markdown exports execution limits, full contribution provenance and separa
   expect(text).toContain("Completed models are retained");
   expect(text).toContain("Reentrancy \\| \\<script\\>");
   expect(text).toContain("#### Model contributions");
+  expect(text).toContain(
+    "## Independent static baseline\n\nThis appendix records only the separate on-device static analysis. Its execution-stage statuses and limitations do not describe the Bedrock reviews above.",
+  );
+  expect(text.endsWith(markdownReport(staticReport))).toBe(true);
 });
 
 test("subtraction assignment anchors merge the same arithmetic site but preserve distinct sites", async () => {

@@ -1,5 +1,26 @@
 # Verification records
 
+## Final report ordering and severity details
+
+The final report sorts its derived findings by the latest proposed severity (high,
+medium, low, then unrated), preserving stable ordering within each level. The two
+original round records, finding identifiers and judgments are unchanged. The
+collapsed model table and consolidated Markdown table display each model's latest
+valid severity, including conflicting retained original ratings. The static
+appendix now clarifies that its isolated execution statuses do not describe the
+Bedrock reviews above.
+
+- The full offline check passed: **118 Python tests and 563 TypeScript/controller/
+  React SSR tests**, Ruff, ESLint, TypeScript, formatting, generated-source parity
+  and the Next.js production build.
+- After aligning the Markdown severity column, all **162 affected report,
+  orchestration and second-review tests** passed again, together with ESLint,
+  TypeScript, formatting and a fresh production build.
+- The new regressions cover reordered severities, stable ties, preservation of
+  both original records, conflicting retained ratings, accepted reassessment
+  supersession and absent ratings. Existing bounded execution controls are
+  unchanged. No new live AWS calls or browser interaction tests were performed.
+
 ## Extended execution and first-round recovery
 
 The current execution policy allows **three attempts per model, 270 seconds per model, 285 seconds per round and nine provider requests per round**. Browser waits are 295 seconds and review functions allow 300 seconds. Both rounds share their finite attempt budget between eligible service/network recovery, an upstream Bedrock HTTP 408 model timeout and safe local-validation correction. The first-round prompt and both execution policies are versioned; historical records retain their original limits and retry semantics. Successful models are not rerun, and no attempt resets a deadline. Source/assignment binding, strict evidence validation, the manual three-stage workflow and last-valid-opinion aggregation remain unchanged.

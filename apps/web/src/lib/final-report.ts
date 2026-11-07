@@ -81,6 +81,30 @@ const highest = (values: Severity[]) =>
     null,
   );
 
+/** Keep every distinct retained rating; a merged claim can have conflicting originals. */
+export function currentModelSeverities(
+  baseline: CouncilReport,
+  findingId: string,
+  judgment: FinalModelJudgment,
+): Severity[] {
+  if (judgment.opinion_source !== "first_round")
+    return judgment.proposed_severity ? [judgment.proposed_severity] : [];
+  const finding = baseline.findings.find((item) => item.id === findingId)!;
+  const run = baseline.models.find(
+    (item) => item.model_id === judgment.model_id,
+  )!;
+  return [
+    ...new Set(
+      finding.members
+        .filter((member) => member.model_id === judgment.model_id)
+        .map(
+          (member) =>
+            run.review!.findings[member.finding_index].proposed_severity,
+        ),
+    ),
+  ].sort((a, b) => rank[b] - rank[a]);
+}
+
 /** Read model over already-validated reports; never mutates either original round.
  * Import/export boundaries must validate the exact baseline hash before calling.
  */
@@ -179,20 +203,9 @@ export function buildFinalReviewReport(
           item.opinion_source === "first_round",
       )
       .map((item) => item.model_id);
-    const severities = judgments.flatMap((item) => {
-      if (item.opinion_source === "first_round") {
-        const run = baseline.models.find(
-          (model) => model.model_id === item.model_id,
-        )!;
-        return finding.members
-          .filter((member) => member.model_id === item.model_id)
-          .map(
-            (member) =>
-              run.review!.findings[member.finding_index].proposed_severity,
-          );
-      }
-      return item.proposed_severity ? [item.proposed_severity] : [];
-    });
+    const severities = judgments.flatMap((item) =>
+      currentModelSeverities(baseline, finding.id, item),
+    );
     const severity_disagreement = new Set(severities).size > 1;
     const outcome =
       !deferred && supporting_models.length === 3
@@ -243,6 +256,12 @@ export function buildFinalReviewReport(
               : "Resolve missing context or conflicting judgments with source review and a focused test.",
     };
   });
+  // Sort only the derived view. Stable ties preserve the original finding order.
+  findings.sort(
+    (a, b) =>
+      (b.proposed_severity ? rank[b.proposed_severity] : 0) -
+      (a.proposed_severity ? rank[a.proposed_severity] : 0),
+  );
   return {
     schema_version: "1.1.0",
     kind: "dtcc-consolidated-findings",
