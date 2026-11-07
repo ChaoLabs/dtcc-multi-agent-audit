@@ -117,7 +117,7 @@ export async function validateResponse(
       (execution === "browser"
         ? "browser-static-rules"
         : "legacy-static-rules") ||
-    report.engine_version !== "0.1.0" ||
+    !["0.1.0", "0.1.1"].includes(report.engine_version) ||
     report.mode !== "static" ||
     report.execution !== execution ||
     report.input?.source !== source ||

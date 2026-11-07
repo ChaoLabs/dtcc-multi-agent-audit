@@ -64,6 +64,19 @@ test("documentation presents both undated resources with responsive reading and 
     .getByRole("link", { name: "Connection & analysis guide", exact: true })
     .click();
   await expect(page).toHaveURL(`${production}/guide`);
+  const sections = page.getByRole("navigation", { name: "Guide sections" });
+  await expect(
+    sections.getByRole("link", { name: "Static Analysis", exact: true }),
+  ).toHaveAttribute("href", "#static");
+  await expect(
+    sections.getByRole("link", { name: "Bedrock Review", exact: true }),
+  ).toHaveAttribute("href", "#bedrock");
+  await expect(
+    sections.getByRole("link", { name: "Findings", exact: true }),
+  ).toHaveAttribute("href", "#reports");
+  await expect(page.locator("#bedrock")).toContainText(
+    "Second Review is a separate action; it never starts automatically.",
+  );
   await page
     .getByRole("navigation", { name: "Guide navigation" })
     .getByRole("link", { name: "Documentation", exact: true })

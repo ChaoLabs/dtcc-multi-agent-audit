@@ -4,14 +4,28 @@ import { BEDROCK, BEDROCK_MODELS } from "../src/lib/bedrock-config";
 import {
   buildCouncilReport,
   validateCouncil,
+  firstReviewEvidenceMethod,
+  firstReviewReasoningEffort,
   type ModelRun,
   type ModelAttempt,
   type CouncilReport,
   type ExecutionProvenance,
 } from "../src/lib/orchestration";
 import { councilMarkdown } from "../src/lib/council-export";
+import { markdownReport } from "../src/lib/report";
 import { analyzeStatic, sha256, sourceLines } from "../src/lib/static-analysis";
-import { POLICY_VERSION, PROMPT_VERSION } from "../src/lib/review-policy";
+import {
+  POLICY_VERSION,
+  PROMPT_VERSION,
+  REVIEW_POLICY,
+  LEGACY_REVIEW_POLICY,
+} from "../src/lib/review-policy";
+
+const legacyLimits = {
+  max_attempts_per_model: LEGACY_REVIEW_POLICY.max_attempts_per_model,
+  model_timeout_ms: LEGACY_REVIEW_POLICY.model_timeout_ms,
+  overall_timeout_ms: LEGACY_REVIEW_POLICY.overall_timeout_ms,
+};
 
 const source = [
   "pragma solidity ^0.8.20;",
@@ -529,9 +543,9 @@ function execution(totalAttempts = 3): ExecutionProvenance {
     policy_version: POLICY_VERSION,
     prompt_variant: "baseline",
     prompt_version: PROMPT_VERSION,
-    max_attempts_per_model: 2,
-    model_timeout_ms: 180_000,
-    overall_timeout_ms: 210_000,
+    max_attempts_per_model: REVIEW_POLICY.max_attempts_per_model,
+    model_timeout_ms: REVIEW_POLICY.model_timeout_ms,
+    overall_timeout_ms: REVIEW_POLICY.overall_timeout_ms,
     total_attempts: totalAttempts,
   };
 }
@@ -656,13 +670,13 @@ for (const [name, change] of [
   [
     "unbounded model deadline",
     (report: CouncilReport) => {
-      report.execution!.model_timeout_ms = 180_001;
+      report.execution!.model_timeout_ms = 270_001;
     },
   ],
   [
     "unbounded overall deadline",
     (report: CouncilReport) => {
-      report.execution!.overall_timeout_ms = 210_001;
+      report.execution!.overall_timeout_ms = 285_001;
     },
   ],
   [
@@ -734,13 +748,8 @@ for (const [name, change] of [
   });
 }
 
-test("attempt histories cannot turn an access or evidence failure into an automatic retry", async () => {
-  for (const code of [
-    "bedrock_access",
-    "invalid_evidence",
-    "invalid_review",
-    "review_failed",
-  ]) {
+test("attempt histories cannot turn access or opaque failures into an automatic retry", async () => {
+  for (const code of ["bedrock_access", "invalid_review", "review_failed"]) {
     const models = await trackedRuns([[], [], []]);
     models[0].attempts.unshift({
       attempt: 1,
@@ -757,9 +766,9 @@ test("attempt histories cannot turn an access or evidence failure into an automa
   }
 });
 
-test("a third request exceeds the hard per-model and overall request budget", async () => {
+test("a fourth request exceeds the hard per-model and overall request budget", async () => {
   const models = await trackedRuns([[], [], []]);
-  models[0].attempts = [1, 2]
+  models[0].attempts = [1, 2, 3]
     .map<ModelAttempt>((attempt) => ({
       attempt,
       status: "failed",
@@ -769,23 +778,23 @@ test("a third request exceeds the hard per-model and overall request budget", as
     }))
     .concat([
       {
-        attempt: 3,
+        attempt: 4,
         status: "succeeded",
         elapsed_ms: 12,
         error_code: null,
         retry_delay_ms: 0,
       },
     ]);
-  models[0].elapsed_ms = 14;
+  models[0].elapsed_ms = 15;
   await expect(
-    buildCouncilReport(models, source, 20, execution(5)),
+    buildCouncilReport(models, source, 20, execution(6)),
   ).rejects.toThrow("attempt history");
   await expect(
     buildCouncilReport(
       await trackedRuns([[], [], []]),
       source,
       20,
-      execution(7),
+      execution(10),
     ),
   ).rejects.toThrow("policy");
 });
@@ -807,12 +816,10 @@ test("Markdown exports execution limits, full contribution provenance and separa
     ...execution(),
     prompt_variant: "few-shot",
   });
-  const text = councilMarkdown(
-    await analyzeStatic("Vault.sol", source),
-    report,
-  );
-  expect(text).toContain("Prompt: independent-review-v2 / few-shot");
-  expect(text).toContain("Requests made: 3 / 6 maximum");
+  const staticReport = await analyzeStatic("Vault.sol", source);
+  const text = councilMarkdown(staticReport, report);
+  expect(text).toContain(`Prompt: ${PROMPT_VERSION} / few-shot`);
+  expect(text).toContain("Requests made: 3 / 9 maximum");
   expect(text).toContain("Attempt 1: succeeded");
   expect(text).toContain(
     "successful attempt only; failed requests may also be billed",
@@ -823,7 +830,390 @@ test("Markdown exports execution limits, full contribution provenance and separa
   expect(text).toContain(
     `Unavailable: ${BEDROCK_MODELS[2].label.replace(/\./g, "\\.")}`,
   );
-  expect(text).toContain("does not add a fourth LLM");
+  expect(text).toContain("Completed models are retained");
   expect(text).toContain("Reentrancy \\| \\<script\\>");
   expect(text).toContain("#### Model contributions");
+  expect(text).toContain(
+    "## Independent static baseline\n\nThis appendix records only the separate on-device static analysis. Its execution-stage statuses and limitations do not describe the Bedrock reviews above.",
+  );
+  expect(text.endsWith(markdownReport(staticReport))).toBe(true);
+});
+
+test("subtraction assignment anchors merge the same arithmetic site but preserve distinct sites", async () => {
+  const input = [
+    "pragma solidity ^0.7.6;",
+    "contract Arithmetic {",
+    "  uint value;",
+    "  function subtract() external {",
+    "    value -= 1;",
+    "    value -= 2;",
+    "  }",
+    "}",
+  ].join("\n");
+  const first = [
+    "Subtraction may wrap",
+    "Unchecked decrement",
+    "Integer underflow",
+  ].map((title, index) =>
+    finding(
+      title,
+      5,
+      5,
+      index === 2 ? "integer-underflow" : "arithmetic",
+      "HIGH",
+      input,
+    ),
+  );
+  const report = await buildCouncilReport(
+    await runs(
+      first.map((item) => [item]),
+      input,
+    ),
+    input,
+    20,
+  );
+  expect(report.findings).toHaveLength(1);
+  expect(report.findings[0].agreement).toBe(3);
+  const split = await buildCouncilReport(
+    await runs(
+      [
+        [first[0]],
+        [first[1]],
+        [finding("Distinct subtraction", 6, 6, "arithmetic", "HIGH", input)],
+      ],
+      input,
+    ),
+    input,
+    20,
+  );
+  expect(split.findings).toHaveLength(2);
+  expect(split.findings.map((item) => item.agreement).sort()).toEqual([1, 2]);
+});
+
+test("archived arithmetic reports without a grouping version retain their historical split findings", async () => {
+  const input = [
+    "pragma solidity ^0.7.6;",
+    "contract OldArithmetic {",
+    "  function subtract(uint value) external {",
+    "    value -= 1;",
+    "  }",
+    "}",
+  ].join("\n");
+  const contributions = ["Wraparound A", "Wraparound B", "Wraparound C"].map(
+    (title) => [finding(title, 4, 4, "arithmetic", "HIGH", input)],
+  );
+  const models = await runs(contributions, input);
+  const archived = await buildCouncilReport(models, input, 20);
+  delete archived.aggregation_version;
+  const historicIds = [
+    "53ec7a7d39dcd2b3c2c8adb1",
+    "9ba92336287f4218e51d5502",
+    "d8bb27cc8e719588e5f88d14",
+  ];
+  archived.findings = contributions.map(([item], index) => ({
+    ...item,
+    id: historicIds[index],
+    agreement: 1,
+    confidence: "LOW",
+    supporting_models: [models[index].model_id],
+    members: [{ model_id: models[index].model_id, finding_index: 0 }],
+    severity_disagreement: false,
+  }));
+  expect((await validateCouncil(archived, input)).findings).toHaveLength(3);
+  // Relabeling an old aggregate cannot silently change the grouping interpretation.
+  await expect(
+    validateCouncil(
+      { ...archived, aggregation_version: "source-locus-v2" },
+      input,
+    ),
+  ).rejects.toThrow();
+  const current = await buildCouncilReport(models, input, 20);
+  expect(current.aggregation_version).toBe("source-locus-v2");
+  expect(current.findings).toHaveLength(1);
+  expect((await validateCouncil(current, input)).findings[0].agreement).toBe(3);
+});
+
+async function recoveredRuns(code = "bedrock_network", delay = 10_000) {
+  const models = await trackedRuns([[finding()], [], []]);
+  models[0].attempts.unshift({
+    attempt: 1,
+    status: "failed",
+    elapsed_ms: 10,
+    error_code: code,
+    retry_delay_ms: 0,
+  });
+  models[0].attempts[1].attempt = 2;
+  models[0].attempts[1].retry_delay_ms = delay;
+  models[0].elapsed_ms = delay + 22;
+  return models;
+}
+
+test("network recovery provenance permits a provider delay within the original budget", async () => {
+  const models = await recoveredRuns();
+  const report = await buildCouncilReport(models, source, 10_030, execution(4));
+  expect(report.execution?.policy_version).toBe(POLICY_VERSION);
+  expect(
+    report.models[0].attempts?.map((attempt) => attempt.error_code),
+  ).toEqual(["bedrock_network", null]);
+  expect(
+    await validateCouncil(JSON.parse(JSON.stringify(report)), source),
+  ).toEqual(report);
+  expect(report.findings[0].agreement).toBe(1);
+});
+
+test("historical policy imports retain their original identity and five-second delay bound", async () => {
+  const models = await recoveredRuns("bedrock_rate_limit", 500);
+  const policy: ExecutionProvenance = {
+    ...execution(4),
+    ...legacyLimits,
+    policy_version: "bounded-review-v1",
+    prompt_version: "independent-review-v2",
+  };
+  const report = await buildCouncilReport(models, source, 530, policy);
+  expect(
+    (await validateCouncil(report, source)).execution?.policy_version,
+  ).toBe("bounded-review-v1");
+  for (const runs of [
+    await recoveredRuns("bedrock_rate_limit", 10_000),
+    await recoveredRuns("bedrock_network", 500),
+  ]) {
+    await expect(
+      buildCouncilReport(runs, source, 10_030, policy),
+    ).rejects.toThrow();
+  }
+});
+
+test("recovery provenance rejects an unknown policy and a delay that exhausts the budget", async () => {
+  const models = await recoveredRuns();
+  await expect(
+    buildCouncilReport(models, source, 10_030, {
+      ...execution(4),
+      model_timeout_ms: 10_000,
+    }),
+  ).rejects.toThrow();
+  await expect(
+    buildCouncilReport(models, source, 10_030, {
+      ...execution(4),
+      overall_timeout_ms: 10_000,
+    }),
+  ).rejects.toThrow();
+  const report = await buildCouncilReport(models, source, 10_030, execution(4));
+  const altered = JSON.parse(JSON.stringify(report));
+  altered.execution.policy_version = "unbounded-network-recovery";
+  await expect(validateCouncil(altered, source)).rejects.toThrow();
+});
+
+test("content filtering and access denial cannot be relabeled as retryable recovery", async () => {
+  for (const code of [
+    "content_filtered",
+    "guardrail_intervened",
+    "bedrock_access",
+  ]) {
+    await expect(
+      buildCouncilReport(
+        await recoveredRuns(code, 500),
+        source,
+        530,
+        execution(4),
+      ),
+    ).rejects.toThrow("non-transient");
+  }
+});
+
+test("source-span evidence and Grok effort provenance never relabel historical first rounds", async () => {
+  const report = await buildCouncilReport(
+    await trackedRuns([[finding("Review")], [], []]),
+    source,
+    20,
+    execution(),
+  );
+  expect(firstReviewEvidenceMethod(report)).toContain("Model-selected lines");
+  for (const model of BEDROCK_MODELS)
+    expect(firstReviewReasoningEffort(report, model.id)).toBe(
+      model.id === BEDROCK_MODELS[2].id ? "medium" : "provider default",
+    );
+  for (const policy of [
+    "bounded-review-v2-network-recovery",
+    "bounded-review-v1",
+  ] as const) {
+    const historical = structuredClone(report);
+    historical.execution!.prompt_version = "independent-review-v2";
+    historical.execution!.policy_version = policy;
+    Object.assign(historical.execution!, legacyLimits);
+    expect(await validateCouncil(historical, source)).toEqual(historical);
+    expect(firstReviewEvidenceMethod(historical)).toContain(
+      "Model-provided excerpt",
+    );
+    expect(firstReviewReasoningEffort(historical, BEDROCK_MODELS[2].id)).toBe(
+      "provider default",
+    );
+    historical.models[0].review!.findings[0].evidence.excerpt =
+      "invented source";
+    await expect(validateCouncil(historical, source)).rejects.toThrow();
+  }
+  const impossible = structuredClone(report);
+  impossible.execution!.policy_version = "bounded-review-v1";
+  await expect(validateCouncil(impossible, source)).rejects.toThrow("policy");
+});
+
+test("reader-focused prompts preserve the prior source-span protocol on imported reports", async () => {
+  const report = await buildCouncilReport(
+    await trackedRuns([[finding("Review")], [], []]),
+    source,
+    20,
+    execution(),
+  );
+  const prior = structuredClone(report);
+  prior.execution!.prompt_version =
+    "independent-review-v3-source-spans-grok-medium";
+  prior.execution!.policy_version = "bounded-review-v2-network-recovery";
+  Object.assign(prior.execution!, legacyLimits);
+  expect(await validateCouncil(prior, source)).toEqual(prior);
+  expect(firstReviewEvidenceMethod(prior)).toContain("Model-selected lines");
+  expect(firstReviewReasoningEffort(prior, BEDROCK_MODELS[2].id)).toBe(
+    "medium",
+  );
+  expect(prior.execution!.prompt_version).not.toBe(PROMPT_VERSION);
+  prior.execution!.policy_version = "bounded-review-v1";
+  await expect(validateCouncil(prior, source)).rejects.toThrow("policy");
+});
+
+for (const code of [
+  "invalid_report",
+  "invalid_evidence",
+  "bedrock_model_timeout",
+] as const) {
+  test(`extended first-round policy accepts ${code} recovery without granting it to historical reports`, async () => {
+    const models = await recoveredRuns(code, 500);
+    const report = await buildCouncilReport(models, source, 530, execution(4));
+    expect(await validateCouncil(report, source)).toEqual(report);
+    expect(report.findings[0].agreement).toBe(1);
+    for (const prompt of [
+      "independent-review-v2",
+      "independent-review-v3-source-spans-grok-medium",
+      "independent-review-v4-reader-focused-source-spans-grok-medium",
+    ] as const) {
+      const historical = structuredClone(report);
+      Object.assign(historical.execution!, legacyLimits, {
+        policy_version: "bounded-review-v2-network-recovery",
+        prompt_version: prompt,
+      });
+      await expect(validateCouncil(historical, source)).rejects.toThrow(
+        "non-transient",
+      );
+    }
+  });
+}
+
+test("nine bounded requests retain three independent results and legacy limits remain immutable", async () => {
+  const models = await trackedRuns([[finding()], [finding()], [finding()]]);
+  for (const model of models) {
+    model.attempts = [
+      {
+        attempt: 1,
+        status: "failed",
+        elapsed_ms: 120_000,
+        error_code: "bedrock_model_timeout",
+        retry_delay_ms: 0,
+      },
+      {
+        attempt: 2,
+        status: "failed",
+        elapsed_ms: 50_000,
+        error_code: "bedrock_unavailable",
+        retry_delay_ms: 500,
+      },
+      {
+        attempt: 3,
+        status: "succeeded",
+        elapsed_ms: 12,
+        error_code: null,
+        retry_delay_ms: 30_000,
+      },
+    ];
+    model.elapsed_ms = 200_512;
+  }
+  const report = await buildCouncilReport(
+    models,
+    source,
+    200_520,
+    execution(9),
+  );
+  expect(await validateCouncil(report, source)).toEqual(report);
+  expect(report.execution!.total_attempts).toBe(9);
+  expect(report.findings[0].agreement).toBe(3);
+  expect(report.findings[0].members).toHaveLength(3);
+  expect(
+    councilMarkdown(await analyzeStatic("Vault.sol", source), report),
+  ).toContain("Requests made: 9 / 9 maximum");
+  const historical = await buildCouncilReport(
+    await trackedRuns([[finding()], [], []]),
+    source,
+    20,
+    {
+      ...execution(),
+      ...legacyLimits,
+      policy_version: "bounded-review-v2-network-recovery",
+      prompt_version:
+        "independent-review-v4-reader-focused-source-spans-grok-medium",
+    },
+  );
+  expect(await validateCouncil(historical, source)).toEqual(historical);
+  expect(
+    councilMarkdown(await analyzeStatic("Vault.sol", source), historical),
+  ).toContain("Requests made: 3 / 6 maximum");
+  for (const altered of [
+    { model_timeout_ms: 180_001 },
+    { overall_timeout_ms: 210_001 },
+    { max_attempts_per_model: 3 },
+    { total_attempts: 7 },
+  ]) {
+    const invalid = structuredClone(historical);
+    Object.assign(invalid.execution!, altered);
+    await expect(validateCouncil(invalid, source)).rejects.toThrow("policy");
+  }
+});
+
+test("extended first-round imports reject forged late success while preserving timeout and historical records", async () => {
+  const report = await buildCouncilReport(
+    await trackedRuns([[finding()], [], []]),
+    source,
+    20,
+    execution(),
+  );
+  const late = structuredClone(report);
+  late.models[0].elapsed_ms = 270_011;
+  late.models[0].attempts![0].elapsed_ms = 270_011;
+  late.elapsed_ms = 270_012;
+  await expect(validateCouncil(late, source)).rejects.toThrow(
+    "execution deadline",
+  );
+  const earlierRound = structuredClone(report);
+  earlierRound.execution!.overall_timeout_ms = 10;
+  earlierRound.models[0].elapsed_ms = 21;
+  earlierRound.models[0].attempts![0].elapsed_ms = 21;
+  earlierRound.elapsed_ms = 22;
+  await expect(validateCouncil(earlierRound, source)).rejects.toThrow(
+    "execution deadline",
+  );
+  const historical = structuredClone(late);
+  Object.assign(historical.execution!, legacyLimits, {
+    policy_version: "bounded-review-v2-network-recovery",
+    prompt_version:
+      "independent-review-v4-reader-focused-source-spans-grok-medium",
+  });
+  expect(await validateCouncil(historical, source)).toEqual(historical);
+  late.models[0].status = "failed";
+  late.models[0].review = null;
+  late.models[0].error = { code: "timeout", detail: "Model deadline reached." };
+  late.models[0].attempts![0].status = "failed";
+  late.models[0].attempts![0].error_code = "timeout";
+  const timedOut = await buildCouncilReport(
+    late.models,
+    source,
+    late.elapsed_ms,
+    execution(),
+  );
+  expect(timedOut.status).toBe("partial");
+  expect(timedOut.models[0].error!.code).toBe("timeout");
 });

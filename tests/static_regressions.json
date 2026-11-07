@@ -1,0 +1,110 @@
+[
+  {
+    "name": "comments are not executable code",
+    "source": "pragma solidity ^0.8.20;\ncontract C {\n function pay() public {\n  // msg.sender.transfer(1); owner=msg.sender; while(true) {}\n  /* address(1).delegatecall(\"\");\n     require(tx.origin==owner); selfdestruct(msg.sender);\n     require(block.timestamp > 5); uint random=block.number;\n     msg.sender.send(1); C(msg.sender).pay(); }\n  */\n }\n}",
+    "expected": []
+  },
+  {
+    "name": "quoted literals and escapes are not executable code",
+    "source": "pragma solidity ^0.8.20;\ncontract C {\n function pay() public {\n  string memory x = \"https://example.test/\\\\\\\"; msg.sender.transfer(1); }\";\n  string memory y = '/* owner=msg.sender; while(true) {} */';\n  string memory z = \"address(1).delegatecall(\\\"\\\"); require(tx.origin==owner)\";\n }\n}",
+    "expected": []
+  },
+  {
+    "name": "commented guard cannot hide a real asset transfer",
+    "source": "pragma solidity ^0.8.20;\ncontract C {\n function pay() public /* onlyOwner */ {\n  // require(msg.sender==owner);\n  msg.sender.transfer(1);\n }\n}",
+    "expected": [
+      [
+        "SC-014",
+        "HIGH",
+        5
+      ]
+    ]
+  },
+  {
+    "name": "commented state updates cannot create a reentrancy candidate",
+    "source": "pragma solidity ^0.8.20;\ncontract C {\n function withdraw() public {\n  (bool ok,) = msg.sender.call{value: 1}(\"\");\n  // balances[msg.sender]=0;\n  require(ok);\n }\n}",
+    "expected": []
+  },
+  {
+    "name": "value call trivia keeps state update order",
+    "source": "pragma solidity ^0.8.20;\ncontract C {\n mapping(address=>uint) balances;\n function withdraw() public {\n  (bool ok,) = msg.sender.call /* rationale */ { value : 1 }(\"\");\n  balances /* slot */ [msg.sender] = 0;\n  require(ok);\n }\n}",
+    "expected": [
+      [
+        "SC-001",
+        "HIGH",
+        5
+      ]
+    ]
+  },
+  {
+    "name": "missing pragma cannot be supplied by a comment",
+    "source": "// pragma solidity ^0.8.20;\ncontract C {}",
+    "expected": [
+      [
+        "SC-008",
+        "LOW",
+        1
+      ]
+    ]
+  },
+  {
+    "name": "comment braces cannot change function scope",
+    "source": "pragma solidity ^0.8.20;\ncontract C {\n function withdraw() public {\n  // }\n  string memory ignored = \"}\";\n  (bool ok,) = msg.sender.call{value: 1}(\"\");\n  balances[msg.sender]=0;\n  require(ok);\n }\n}",
+    "expected": [
+      [
+        "SC-001",
+        "HIGH",
+        6
+      ]
+    ]
+  },
+  {
+    "name": "CRLF and unicode preserve real evidence line",
+    "source": "pragma solidity ^0.8.20;\r\ncontract C {\r\n function f() public {\r\n  /* 中文🙂\r\n    fake } } delegatecall(\"\") */\r\n  address(1).delegatecall(\"\");\r\n }\r\n}\r\n",
+    "expected": [
+      [
+        "SC-004",
+        "HIGH",
+        6
+      ]
+    ]
+  },
+  {
+    "name": "block comment ending resumes real code",
+    "source": "pragma solidity ^0.8.20;\ncontract C {\n function f() public {\n  /* address(2).delegatecall(\"\"); */ address(1).delegatecall(\"\");\n }\n}",
+    "expected": [
+      [
+        "SC-004",
+        "HIGH",
+        4
+      ]
+    ]
+  },
+  {
+    "name": "unclosed comments cannot manufacture executable code",
+    "source": "pragma solidity ^0.8.20;\ncontract C {\n function f() public {\n  /* address(1).delegatecall(\"\");\n     owner=msg.sender;\n }\n}",
+    "expected": []
+  },
+  {
+    "name": "multiline value call preserves assignment and source location",
+    "source": "pragma solidity ^0.8.20;\ncontract C {\n function withdraw() public {\n  (bool ok,) =\n    msg.sender.call\n    {\n      value : 1\n    }(\"\");\n  balances[msg.sender]=0;\n  require(ok);\n }\n}",
+    "expected": [
+      [
+        "SC-001",
+        "HIGH",
+        5
+      ]
+    ]
+  },
+  {
+    "name": "multiline unchecked call remains a candidate",
+    "source": "pragma solidity ^0.8.20;\ncontract C {\n function withdraw() public {\n  msg.sender.call\n    { value: 1 }(\"\");\n }\n}",
+    "expected": [
+      [
+        "SC-002",
+        "MEDIUM",
+        4
+      ]
+    ]
+  }
+]

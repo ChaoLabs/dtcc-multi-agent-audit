@@ -1,5 +1,11 @@
+import { POLICY_VERSION } from "@/lib/review-policy";
 import type { AuditReport } from "@/generated/report";
-import { buildReviewQueue, type CouncilReport } from "@/lib/orchestration";
+import {
+  buildReviewQueue,
+  firstReviewEvidenceMethod,
+  firstReviewReasoningEffort,
+  type CouncilReport,
+} from "@/lib/orchestration";
 import { markdownReport } from "@/lib/report";
 
 const literal = (value: string) =>
@@ -26,15 +32,19 @@ export function councilMarkdown(report: AuditReport, council: CouncilReport) {
     ...(council.execution
       ? [
           "## Execution controls",
-          `Controller: ${council.execution.policy_version} (deterministic application code)\nPrompt: ${council.execution.prompt_version} / ${council.execution.prompt_variant}\nRequests made: ${council.execution.total_attempts} / 6 maximum\nAttempts per model: at most ${council.execution.max_attempts_per_model}\nModel deadline: ${council.execution.model_timeout_ms} ms, shared across attempts\nOverall deadline: ${council.execution.overall_timeout_ms} ms`,
-          "One retry is permitted only for explicit transient service responses. Validation failures and access errors are not retried. The controller retains validated responses and routes disagreement for human review; it does not add a fourth LLM or convert agreement into proof of correctness.",
+          `Controller: ${council.execution.policy_version} (deterministic application code)\nPrompt: ${council.execution.prompt_version} / ${council.execution.prompt_variant}\nRequests made: ${council.execution.total_attempts} / ${council.execution.max_attempts_per_model * council.models.length} maximum\nAttempts per model: at most ${council.execution.max_attempts_per_model}\nModel deadline: ${council.execution.model_timeout_ms} ms, shared across attempts\nOverall deadline: ${council.execution.overall_timeout_ms} ms`,
+          council.execution.policy_version === POLICY_VERSION
+            ? "Up to three attempts per model share one deadline. Selected temporary service, connection and remote model-timeout errors may retry; local format or evidence failures may receive constraint-only correction. Every replacement is validated in full. Access errors, filtering, credential echoes and local cancellation are terminal. Completed models are retained; agreement is not proof of correctness."
+            : "One retry is permitted only for selected transient service or connection failures under the recorded policy. Validation failures and access errors are not retried. The controller retains validated responses and routes disagreement for review; it does not add a fourth LLM or convert agreement into proof of correctness.",
         ]
       : []),
     "## Model coverage",
+    `Evidence method: ${firstReviewEvidenceMethod(council)}`,
     ...council.models.map((model) =>
       [
         `### ${literal(model.label)}`,
         `Model: ${literal(model.model_id)} | Status: ${model.status} | Elapsed: ${model.elapsed_ms} ms`,
+        `Reasoning effort: ${firstReviewReasoningEffort(council, model.model_id)}`,
         ...(model.attempts
           ? [
               `Requests made: ${model.attempts.length}`,
@@ -90,6 +100,7 @@ export function councilMarkdown(report: AuditReport, council: CouncilReport) {
             : "No model candidates were retained. This does not establish contract safety.",
         ]),
     "## Independent static baseline",
+    "This appendix records only the separate on-device static analysis. Its execution-stage statuses and limitations do not describe the Bedrock reviews above.",
     markdownReport(report),
   ].join("\n\n");
 }

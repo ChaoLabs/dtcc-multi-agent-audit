@@ -170,8 +170,8 @@
       "type": "string"
     },
     "engine_version": {
-      "const": "0.1.0",
-      "default": "0.1.0",
+      "default": "0.1.1",
+      "enum": ["0.1.0", "0.1.1"],
       "title": "Engine Version",
       "type": "string"
     },

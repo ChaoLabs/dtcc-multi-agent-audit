@@ -1,7 +1,8 @@
 import { handleSecondReview } from "@/server/second-review";
 
 export const runtime = "nodejs";
-export const maxDuration = 240;
+// Leave response-finalization headroom beyond the server round deadline.
+export const maxDuration = 300;
 
 export async function POST(request: Request) {
   return handleSecondReview(request);

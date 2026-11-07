@@ -1,11 +1,17 @@
 import cases from "@/generated/cases.json";
 import { validateApiKey } from "@/lib/bedrock-config";
 import { validateCouncil, type CouncilReport } from "@/lib/orchestration";
-import { PROMPT_VERSION, type PromptVariant } from "@/lib/review-policy";
+import {
+  PROMPT_VERSION,
+  REVIEW_CLIENT_TIMEOUT_MS,
+  type PromptVariant,
+  type IndependentPromptVersion,
+} from "@/lib/review-policy";
 import {
   buildSecondReviewPlan,
   buildSecondReviewReport,
   type SecondReviewReport,
+  validateSecondReviewReport,
 } from "@/lib/second-review";
 import {
   requestSecondReview,
@@ -51,7 +57,7 @@ export type EvaluationReport = {
   schema_version: "1.1.0";
   review_mode: "independent" | "paired-second-review";
   prompt_variant: PromptVariant;
-  prompt_version: typeof PROMPT_VERSION;
+  prompt_version: IndependentPromptVersion;
   created_at: string;
   status: "completed" | "cancelled" | "stopped";
   elapsed_ms: number;
@@ -86,7 +92,9 @@ export type EvaluationReport = {
   };
 };
 
-function metrics(results: EvaluationCaseResult[]): EvaluationReport["metrics"] {
+export function evaluationMetrics(
+  results: EvaluationCaseResult[],
+): EvaluationReport["metrics"] {
   const reports = results.flatMap((item) => (item.report ? [item.report] : []));
   const runs = reports.flatMap((report) => report.models);
   const reviewed = runs.flatMap((run) => (run.review ? [run.review] : []));
@@ -163,7 +171,8 @@ function metrics(results: EvaluationCaseResult[]): EvaluationReport["metrics"] {
           (entry.report &&
           entry.second_review_status !== "not_requested" &&
           entry.second_review_status !== "pending"
-            ? buildSecondReviewPlan(entry.report).model_ids.length
+            ? (entry.second_review?.plan.model_ids.length ??
+              buildSecondReviewPlan(entry.report).model_ids.length)
             : 0),
         0,
       ),
@@ -226,7 +235,10 @@ export async function runEvaluation({
     throw new Error("Choose a supported review mode.");
   const timer = setTimeout(
     () => deadline.abort(),
-    (includeSecondReview ? 40 : 20) * 60_000,
+    EVALUATION_CASES.length *
+      (includeSecondReview ? 2 : 1) *
+      REVIEW_CLIENT_TIMEOUT_MS +
+      30_000,
   );
   const batchSignal = AbortSignal.any([signal, deadline.signal]);
   const result: EvaluationReport = {
@@ -250,11 +262,11 @@ export async function runEvaluation({
       second_review_status: includeSecondReview ? "pending" : "not_requested",
       second_review_error: null,
     })),
-    metrics: metrics([]),
+    metrics: evaluationMetrics([]),
   };
   const snapshot = () => {
     result.elapsed_ms = Math.round(performance.now() - start);
-    result.metrics = metrics(result.cases);
+    result.metrics = evaluationMetrics(result.cases);
     return structuredClone(result);
   };
   try {
@@ -268,7 +280,10 @@ export async function runEvaluation({
       entry.status = "running";
       onProgress?.(snapshot());
       const controller = new AbortController();
-      const caseTimer = setTimeout(() => controller.abort(), 235_000);
+      const caseTimer = setTimeout(
+        () => controller.abort(),
+        REVIEW_CLIENT_TIMEOUT_MS,
+      );
       const caseSignal = AbortSignal.any([batchSignal, controller.signal]);
       let stop = false;
       let stopMessage =
@@ -306,7 +321,8 @@ export async function runEvaluation({
         if (
           report.schema_version !== "2.1.0" ||
           !report.execution ||
-          report.execution.prompt_variant !== promptVariant
+          report.execution.prompt_variant !== promptVariant ||
+          report.execution.prompt_version !== PROMPT_VERSION
         ) {
           stop = true;
           stopMessage =
@@ -440,7 +456,191 @@ export function downloadEvaluation(report: EvaluationReport) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `dtcc-validation-${report.review_mode}-${report.prompt_variant}-${report.created_at.replace(/[:.]/g, "-")}.json`;
+  link.download = `dtcc-validation-${report.review_mode}-${report.prompt_variant}.json`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export const MAX_EVALUATION_IMPORT_BYTES = 5 * 1024 * 1024;
+
+/** Import only the fixed, source-bound protocol; recompute metrics instead of trusting them. */
+export async function importEvaluationJSON(
+  contents: string,
+): Promise<EvaluationReport> {
+  const invalid = () => {
+    throw new Error(
+      "This file is not a valid five-contract validation export for the current platform.",
+    );
+  };
+  if (
+    new TextEncoder().encode(contents).length > MAX_EVALUATION_IMPORT_BYTES ||
+    /bedrock-api-key-/i.test(contents)
+  )
+    return invalid();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(contents);
+  } catch {
+    return invalid();
+  }
+  const record = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  const duration = (value: unknown): value is number =>
+    Number.isSafeInteger(value) &&
+    (value as number) >= 0 &&
+    (value as number) <= 3_600_000;
+  const diagnostic = (value: unknown): value is string | null =>
+    value === null ||
+    (typeof value === "string" &&
+      value.length <= 1000 &&
+      !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value));
+  if (
+    !record(raw) ||
+    raw.schema_version !== "1.1.0" ||
+    !["independent", "paired-second-review"].includes(
+      String(raw.review_mode),
+    ) ||
+    !["baseline", "few-shot"].includes(String(raw.prompt_variant)) ||
+    (raw.prompt_version !== PROMPT_VERSION &&
+      raw.prompt_version !==
+        "independent-review-v4-reader-focused-source-spans-grok-medium" &&
+      raw.prompt_version !== "independent-review-v3-source-spans-grok-medium" &&
+      raw.prompt_version !== "independent-review-v2") ||
+    typeof raw.created_at !== "string" ||
+    !Number.isFinite(Date.parse(raw.created_at)) ||
+    new Date(raw.created_at).toISOString() !== raw.created_at ||
+    !["completed", "cancelled", "stopped"].includes(String(raw.status)) ||
+    !duration(raw.elapsed_ms) ||
+    !Array.isArray(raw.cases) ||
+    raw.cases.length !== EVALUATION_CASES.length
+  )
+    return invalid();
+  const allowed = [
+    "schema_version",
+    "review_mode",
+    "prompt_variant",
+    "prompt_version",
+    "created_at",
+    "status",
+    "elapsed_ms",
+    "cases",
+    "metrics",
+    "interpretation",
+    "case_caveats",
+  ];
+  if (Object.keys(raw).some((key) => !allowed.includes(key))) return invalid();
+  const results: EvaluationCaseResult[] = [];
+  for (const [index, candidate] of raw.cases.entries()) {
+    const fixture = EVALUATION_CASES[index];
+    const expectedKeys = [
+      "id",
+      "title",
+      "filename",
+      "source_sha256",
+      "status",
+      "report",
+      "error",
+      "elapsed_ms",
+      "second_review",
+      "second_review_status",
+      "second_review_error",
+    ];
+    if (
+      !record(candidate) ||
+      Object.keys(candidate).length !== expectedKeys.length ||
+      expectedKeys.some((key) => !Object.hasOwn(candidate, key)) ||
+      candidate.id !== fixture.id ||
+      candidate.title !== fixture.title ||
+      candidate.filename !== fixture.filename ||
+      candidate.source_sha256 !== fixture.source_sha256 ||
+      !["pending", "completed", "failed", "cancelled"].includes(
+        String(candidate.status),
+      ) ||
+      !duration(candidate.elapsed_ms) ||
+      !diagnostic(candidate.error) ||
+      !diagnostic(candidate.second_review_error) ||
+      ![
+        "not_requested",
+        "pending",
+        "completed",
+        "partial",
+        "skipped",
+        "failed",
+        "cancelled",
+      ].includes(String(candidate.second_review_status))
+    )
+      return invalid();
+    const baseline =
+      candidate.report === null
+        ? null
+        : await validateCouncil(candidate.report, fixture.source);
+    if (
+      baseline &&
+      (baseline.schema_version !== "2.1.0" ||
+        baseline.execution.prompt_variant !== raw.prompt_variant ||
+        baseline.execution.prompt_version !== raw.prompt_version)
+    )
+      return invalid();
+    if (
+      (candidate.status === "completed" &&
+        (!baseline || baseline.status === "failed")) ||
+      (baseline &&
+        candidate.status !==
+          (baseline.status === "failed" ? "failed" : "completed"))
+    )
+      return invalid();
+    const second =
+      candidate.second_review === null
+        ? null
+        : baseline
+          ? await validateSecondReviewReport(
+              candidate.second_review,
+              fixture.source,
+              baseline,
+            )
+          : invalid();
+    if (
+      raw.review_mode === "independent" &&
+      (second || candidate.second_review_status !== "not_requested")
+    )
+      return invalid();
+    if (
+      raw.review_mode === "paired-second-review" &&
+      candidate.second_review_status === "not_requested"
+    )
+      return invalid();
+    if (
+      (second && candidate.second_review_status !== second.status) ||
+      (!second &&
+        ["completed", "partial"].includes(
+          String(candidate.second_review_status),
+        ))
+    )
+      return invalid();
+    results.push({
+      id: fixture.id,
+      title: fixture.title,
+      filename: fixture.filename,
+      source_sha256: fixture.source_sha256,
+      status: candidate.status as EvaluationCaseResult["status"],
+      report: baseline,
+      error: candidate.error,
+      elapsed_ms: candidate.elapsed_ms,
+      second_review: second,
+      second_review_status:
+        candidate.second_review_status as EvaluationCaseResult["second_review_status"],
+      second_review_error: candidate.second_review_error,
+    });
+  }
+  return {
+    schema_version: "1.1.0",
+    review_mode: raw.review_mode as EvaluationReport["review_mode"],
+    prompt_variant: raw.prompt_variant as PromptVariant,
+    prompt_version: raw.prompt_version as EvaluationReport["prompt_version"],
+    created_at: raw.created_at,
+    status: raw.status as EvaluationReport["status"],
+    elapsed_ms: raw.elapsed_ms,
+    cases: results,
+    metrics: evaluationMetrics(results),
+  };
 }

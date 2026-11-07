@@ -30,7 +30,7 @@ RULES = {
 LIMITATIONS = [
     "Regex baseline only: source has not been compiled; imports and dependencies are not resolved.",
     "Source-bound evidence proves a location, not exploitability or semantic correctness.",
-    "Comments, formatting, naming and function-scope heuristics can cause false positives and misses.",
+    "Comments and quoted literals are masked; formatting, naming and scope heuristics remain limited.",
     "All candidates need human review. No findings does not mean the contract is safe.",
     "No Bedrock model, multi-agent orchestration, Slither, bytecode or on-chain state analysis ran.",
     "Severity is a rule-level proposal, not a calibrated probability, loss estimate or risk score.",

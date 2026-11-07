@@ -11,7 +11,7 @@ MAX_SOURCE_BYTES = 48_000
 MAX_LINES = 1_200
 MAX_LINE_LENGTH = 2_000
 ENGINE = "legacy-static-rules"
-ENGINE_VERSION = "0.1.0"
+ENGINE_VERSION = "0.1.1"
 
 
 class StrictModel(BaseModel):
@@ -77,7 +77,7 @@ class AuditReport(StrictModel):
     execution: Literal["recorded", "local", "browser"]
     mode: Literal["static"] = "static"
     engine: Literal["legacy-static-rules", "browser-static-rules"] = ENGINE
-    engine_version: Literal["0.1.0"] = ENGINE_VERSION
+    engine_version: Literal["0.1.0", "0.1.1"] = ENGINE_VERSION
     source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     input: AuditInput
     candidates: list[Candidate]
@@ -100,7 +100,9 @@ class AuditReport(StrictModel):
                 raise ValueError("Evidence span is outside source")
             if span.excerpt != "\n".join(lines[span.line_start - 1 : span.line_end]):
                 raise ValueError("Evidence excerpt does not match source")
-            expected_id = candidate_id(expected, candidate.rule_id, span.line_start, self.engine)
+            expected_id = candidate_id(
+                expected, candidate.rule_id, span.line_start, self.engine, self.engine_version
+            )
             if candidate.origin != self.engine:
                 raise ValueError("Candidate engine does not match report")
             if candidate.id != expected_id or candidate.id in ids:
@@ -109,6 +111,12 @@ class AuditReport(StrictModel):
         return self
 
 
-def candidate_id(source_hash: str, rule_id: str, line: int, engine: str = ENGINE) -> str:
-    material = f"{engine}@{ENGINE_VERSION}|{source_hash}|{rule_id}|{line}"
+def candidate_id(
+    source_hash: str,
+    rule_id: str,
+    line: int,
+    engine: str = ENGINE,
+    engine_version: str = ENGINE_VERSION,
+) -> str:
+    material = f"{engine}@{engine_version}|{source_hash}|{rule_id}|{line}"
     return hashlib.sha256(material.encode()).hexdigest()[:24]

@@ -1,5 +1,177 @@
 # Verification records
 
+## Final report ordering and severity details
+
+The final report sorts its derived findings by the latest proposed severity (high,
+medium, low, then unrated), preserving stable ordering within each level. The two
+original round records, finding identifiers and judgments are unchanged. The
+collapsed model table and consolidated Markdown table display each model's latest
+valid severity, including conflicting retained original ratings. The static
+appendix now clarifies that its isolated execution statuses do not describe the
+Bedrock reviews above.
+
+- The full offline check passed: **118 Python tests and 563 TypeScript/controller/
+  React SSR tests**, Ruff, ESLint, TypeScript, formatting, generated-source parity
+  and the Next.js production build.
+- After aligning the Markdown severity column, all **162 affected report,
+  orchestration and second-review tests** passed again, together with ESLint,
+  TypeScript, formatting and a fresh production build.
+- The new regressions cover reordered severities, stable ties, preservation of
+  both original records, conflicting retained ratings, accepted reassessment
+  supersession and absent ratings. Existing bounded execution controls are
+  unchanged. No new live AWS calls or browser interaction tests were performed.
+
+## Extended execution and first-round recovery
+
+The current execution policy allows **three attempts per model, 270 seconds per model, 285 seconds per round and nine provider requests per round**. Browser waits are 295 seconds and review functions allow 300 seconds. Both rounds share their finite attempt budget between eligible service/network recovery, an upstream Bedrock HTTP 408 model timeout and safe local-validation correction. The first-round prompt and both execution policies are versioned; historical records retain their original limits and retry semantics. Successful models are not rerun, and no attempt resets a deadline. Source/assignment binding, strict evidence validation, the manual three-stage workflow and last-valid-opinion aggregation remain unchanged.
+
+The latest screenshot establishes incomplete first-round coverage but does not expose the failed model's underlying error. It cannot establish whether the cause was a timeout, provider rejection or invalid response.
+
+- **118 Python tests and 561 TypeScript/controller/React SSR tests passed.** Provider responses are simulated. Coverage includes third-attempt service and validation recovery, successful-model retention, bounded remote HTTP 408 recovery, cancellation, immutable source and schema, historical policy limits, and rejection of impossible late-success records under the new policy.
+- Browser deadline tests use controlled timers to verify that a valid response can survive the former cutoff, stalled requests still stop without outer retries, and both five-case validation modes reserve enough time for every round.
+- Ruff, ESLint, TypeScript, formatting, generated-source checks and the Next.js production build passed. The two existing Python dependency deprecation warnings remain.
+- The eight-page platform overview and three-page orchestration design were rebuilt deterministically without visible dates. All eleven pages were rendered; four changed pages were visually checked and the other seven were pixel-identical to the previously verified versions.
+- **No live AWS request, GitHub change, deployment or browser-interaction run was performed.** These checks verify the exercised recovery behavior and do not guarantee model availability or successful correction of every response.
+
+Run `bash scripts/check.sh` to reproduce the code checks. The delivery bundle is an incremental patch against the installed Second Review Recovery baseline.
+
+The records below describe earlier patches under their then-current limits. They do not describe the new execution policy.
+
+## Bounded correction of second-review format and evidence failures
+
+The supplied consolidated Markdown report records Claude's successful first round and a second-round `invalid_evidence` failure after **18,085 ms**: its citation did not satisfy the integer, ordered, in-source, at-most-twelve-line constraint. That diagnostic does not preserve the actual rejected numbers, so it cannot distinguish which range condition failed. It is a local response-validation failure, not the recorded outcome of an API-key check or timeout. GPT recovered from a temporary service error on its second attempt, and Grok completed its second review in this same record.
+
+Second Review now uses policy `targeted-peer-review-v4-validation-correction` and prompt `targeted-peer-review-v7-bounded-evidence-correction-grok-medium`. After a local wire, canonical or evidence validation failure, the same model may use its remaining attempt to generate a new complete response. Feedback consists only of application-authored validation constraints, trusted slot names and source bounds. The rejected response is not echoed. Source, assignments, native grammar, first-round records and aggregation rules are unchanged. Both service recovery and validation correction share **two attempts per model, 180 seconds per model, 210 seconds per round and six requests per round**. A response must pass every check; evidence is not clamped, fabricated or partially accepted. First-round validation and upstream parsing, authentication, filtering, credential detection and local cancellation remain terminal.
+
+- **118 Python tests and 532 TypeScript/controller/React SSR tests passed.** The 22 new regressions cover corrected invalid ranges and slots, identical model/source/assignments, strict complete-response acceptance, sanitized feedback, isolation of successful models, both service/validation failure orders, repeated failure, cancellation during backoff, insufficient remaining budget, historical policy compatibility and unchanged vote/evaluation accounting. Model responses are simulated.
+- Ruff, ESLint, TypeScript, formatting, generated-source checks and the Next.js production build passed. The two existing Python dependency deprecation warnings remain.
+- Historical network-recovery reports retain their original policy and cannot acquire correction provenance by importing them. A second request is an attempt by the same model, not another model vote. Raw reports and the final report's last-valid-opinion policy are preserved.
+- The platform overview and orchestration design remain **eight and three pages**, with no visible dates. All pages were rendered; the three changed pages were visually inspected, the other eight remain pixel-identical to the previously checked baseline, and deterministic regeneration passed.
+- **No live AWS request, GitHub change, deployment or new browser-interaction run was performed.** UI changes are limited to the existing execution-limit explanation and guide text. Offline recovery tests establish behavior for the exercised failures; they do not establish that the model will always correct its output or that the external service will always be available.
+
+Reproduce offline checks with `bash scripts/check.sh`. Existing browser checks remain available through `npm --prefix apps/web run test:e2e`. New correction behavior applies to subsequent runs, not to already exported historical records.
+
+## Risk report refinement and last-valid-opinion aggregation
+
+This incremental patch applies to the installed Professional Review baseline. The manual **Findings → Second Review → Final Report** workflow and the **Static Analysis / Bedrock Review** terminology remain. Findings and the final report prioritize risk explanations and recommended actions; source evidence, model judgments and execution details remain available in collapsed sections. Coverage presentation accounts for both rounds. Selecting Final Report opens the report directly.
+
+The derived final-report schema is **1.1.0**, with aggregation policy `last-valid-opinion-v1`; the combined JSON envelope is **1.2.0**. When an assigned second review fails, an accepted original finding from that model remains the last valid opinion, including its severity and evidence. Pending reassessment is recorded separately and still requires review. Retention is never counted as a new second-round judgment. A valid explicit second-round rejection or uncertain judgment supersedes that model's original support. Original first-round and second-round records and paired evaluation metrics are unchanged.
+
+The second-round native response grammar now uses the same twelve required nullable slots for every model and assignment count. Local validation requires assigned slots to contain complete judgments and unused slots to be null, then binds judgments to trusted claim IDs and exact source spans. This removes assignment-count-dependent native grammars without relaxing validation or increasing the existing two-attempt, 180-second model, 210-second round or six-call limits. The reader-focused independent prompt and stable-slot peer prompt have distinct new versions; historical reports retain their original provenance. These changes do not establish the upstream cause of the supplied Grok timeout or guarantee live completion.
+
+- **118 Python tests and 510 TypeScript/controller/React SSR tests passed**, including retained support/severity after failed reassessment, explicit counterjudgments, export provenance, complete slot validation across 1–12 assignments, legacy prompt compatibility, safe rendering and risk-first report presentation. Provider responses are simulated.
+- Ruff, ESLint, TypeScript, formatting, generated-source checks and the Next.js production build passed. The two existing Python dependency deprecation warnings remain.
+- The eight-page platform overview and three-page design brief were rebuilt deterministically. All eleven rendered pages were visually inspected. Public document content has no release dates.
+- **Browser interaction tests were updated and discovered, but not executed for this patch.** The managed preview service could not acquire its lock because another preview was active. The existing preview was not interrupted. SSR checks do not establish browser interaction or responsive behavior.
+- **No live AWS request, GitHub change or deployment was performed.** Agreement is not an accuracy score, and this verification does not establish improved detection accuracy or uninterrupted provider availability.
+
+Reproduce offline checks with `bash scripts/check.sh`; run `npm --prefix apps/web run test:e2e` in a working local or CI browser environment. The package's installation verification is recorded separately in its verification notes.
+
+## Bounded network recovery and required second-review answer slots
+
+This patch changes the actual model-request path. Recognized temporary outbound fetch and response-body errors now become `bedrock_network` and can receive one retry inside the original two-attempt, 180-second model and 210-second round limits. Provider Retry-After delays may exceed the local five-second jitter cap only when the original deadline leaves time for another attempt. The successful models are not rerun. Authentication, filtering, local cancellation, unknown/permanent transport errors and invalid reports remain terminal.
+
+Second-round provider output now has one required named answer slot per assigned claim. After validating the entire response, the server binds each slot to the trusted original claim ID and produces the existing canonical assessment array. Source evidence, explicit judgments, original discoveries and missing-vote rules remain unchanged. This addresses the recorded assessment-count failure class; a missing or invalid answer is never fabricated to finish a report. New policy and prompt versions distinguish these changes from historical imports.
+
+- **118 Python tests and 444 TypeScript/controller/React SSR tests passed.** The 34 new regressions exercise transient connection and body-read recovery, Retry-After beyond the local cap, cancellation and deadlines, historical retry provenance, required slot completeness and immutable claim binding for 1, 3 and 12 assignments across all three model adapters. Provider responses in these tests are simulated.
+- Ruff, ESLint, TypeScript, formatting, generated-source checks and the Next.js production build passed. The two existing Python dependency deprecation warnings remain.
+- The actual uploaded paired five-case JSON still imports successfully and retains all five original first-round and second-round policy versions. This checks compatibility; it does not rerun those contracts against AWS.
+- The eight-page platform overview and three-page design brief were regenerated deterministically. All eleven rendered pages were visually inspected; public document content has no release dates.
+- The single replacement package supports both the Diagnostics baseline and the previously supplied Guided Review baseline. It selects by exact file hashes and records the selected baseline in Git metadata for safe reversal. It includes the guided UI changes without requiring separate patch installation.
+- **No new live AWS request, GitHub change or deployment was performed.** The supplied Claude first-round `content_filtered` result is an upstream refusal. This patch does not establish that Claude now accepts that contract and cannot guarantee uninterrupted provider service.
+- **Browser interaction tests remain unexecuted.** The managed preview adapter passes incompatible Vite flags to Next.js. No server workaround was introduced. The UI controller and SSR tests passed, but they do not establish browser interaction or responsive behavior.
+
+Reproduce offline checks with `bash scripts/check.sh`. Run `npm --prefix apps/web run test:e2e` in a working local/CI browser environment. A live acceptance run must use the user's authorized account and retain the exported results, including any unfavorable outcomes.
+
+## Guided review workflow and explicit filtering outcomes
+
+The supplied Caller-controlled callback report now identifies Claude's first-round failure as `AWS stop reason: content_filtered`, returned after 1.740 seconds. This is a recorded provider filtering outcome, not evidence of a timeout or an expired key. GPT and Grok returned valid initial reviews and both completed their assigned follow-up reviews. Overall initial coverage remains **2 / 3**, even though follow-up completion is **2 / 2**. Uncertainty about the missing caller implementation remains a legitimate unresolved judgment.
+
+The guided interface separates contract selection, review and report reading. AI review includes one eligible follow-up by default, with a visible opt-out and usage notice before starting. It uses the exact accepted initial report and retains existing per-round limits, terminal filtering behavior, assignment rules and missing-vote accounting. No source rewriting, provider fallback, filter bypass or hidden recovery call was added. Similar findings remain separate when the evidence-grouping rules cannot safely establish identity.
+
+- **118 Python tests and 410 TypeScript/controller/React SSR tests passed.** Added coverage includes terminal filter classification, old-report explanations, safe error rendering, initial-versus-assigned coverage, automatic follow-up eligibility, duplicate-start prevention, cancellation and stale results. These use simulated provider responses.
+- Ruff, ESLint, TypeScript, formatting, generated-source checks and the Next.js production build passed. The original five Solidity examples, model configuration, prompts and strict report validators are unchanged.
+- The eight-page platform overview and three-page orchestration brief were regenerated, all eleven pages rendered and visually inspected, and deterministic regeneration verified. Public document titles and visible content have no release dates.
+- The patch installer is checked for preflight without writes, exact application, idempotence, rollback, an optional focused local commit, conflict/symlink refusal and preservation of unrelated work.
+- **Browser interaction tests were updated but not executed.** The managed preview adapter injects Vite-only flags into Next.js and cannot start the preview. No application workaround or alternate server was introduced. SSR and code review do not establish responsive browser behavior.
+- **No new live AWS calls or deployment were performed.** This patch improves workflow and truthful handling of provider outcomes; it cannot guarantee that a provider will accept a contract or that model agreement establishes accuracy.
+
+Reproduce offline checks with `bash scripts/check.sh`. Browser checks remain `npm --prefix apps/web run test:e2e` in a working local/CI browser environment. For an authorized live check, use one contract, retain the exported report even when coverage is partial, and inspect the recorded reason before deciding whether another paid run is justified.
+
+## Five-case live record and bounded diagnostics
+
+The supplied paired Standard-prompt validation export passes the application's import validator, source/baseline checks and recomputed metrics. The batch finished in 888,107 ms. Completion means all five cases were attempted, not that every model succeeded.
+
+| Case | Accepted independent reviews | Accepted assigned peer reviews | Remaining execution failures |
+| --- | --- | --- | --- |
+| Vault withdrawal | 2 / 3 | 2 / 2 | Grok first pass reached the 180-second deadline |
+| Caller-controlled callback | 2 / 3 | 1 / 1 | Claude first pass returned generic `incomplete` |
+| Delegated execution | 3 / 3 | 3 / 3 | None in this record |
+| Block-data guessing game | 3 / 3 | 3 / 3 | None in this record |
+| Two-player parity game | 2 / 3 | 1 / 2 | Grok first pass returned generic `incomplete`; Claude second pass failed assessment count validation |
+
+There were 26 provider attempts, 22 accepted model reviews and no automatic retries. The two incomplete records do not retain the actual Bedrock stop reason, so they cannot establish output-token exhaustion, filtering or another cause. Claude's rejected peer response was assigned three claims, but its returned count was not retained. No access-denied error appears. Both assigned Grok peer-review requests succeeded, with no new source-citation rejection in this record.
+
+The 17 new supporting assessments are model-claim opinions, not 17 new vulnerabilities or a measured accuracy improvement. Sixteen unresolved candidates include missing coverage. The two deferred Vault findings had no actionable assignment among successful reviewers; they did not exceed the twelve-candidate limit.
+
+This follow-up exposes exact allowlisted stop reasons and numeric expected/returned assessment counts, while retaining terminal rejection of incomplete or invalid reports. It corrects deferred and unresolved wording. It does not change prompts, schemas, model identities, assignment rules, output budgets, retry eligibility or deadlines, and cannot retroactively recover missing diagnostics. It does not claim to fix a provider timeout or make model output reliable. Live follow-up should retain unfavorable results and inspect the new detail before changing resource limits or provider configuration.
+
+Validation for this follow-up: **118 Python tests and 392 TypeScript/SSR tests passed**, including 21 additional diagnostics regressions. Ruff, ESLint, TypeScript, Prettier, generated-artifact checks and the Next.js production build passed. Eleven installer checks passed, including preflight, application, idempotence, rollback and conflict refusal. The two existing Python dependency deprecation warnings remain. No browser interaction test or new live AWS call was made for this patch. Earlier entries below retain the evidence and limitations available for those updates.
+
+## Grok second-review source-span citations
+
+The latest user-provided live export contains accepted first-round reviews from all three models and accepted second-round judgments from GPT and Claude. Grok's second-round response failed the exact excerpt check after **100,905 ms**: `assessments[0].evidence.excerpt` did not match its cited source lines. The rejected quote was not preserved, so the evidence cannot distinguish a whitespace difference from altered text or a wrong range. It does not identify an expired key or service outage. Claude's successful response establishes that the previous compatibility adapter worked for that run.
+
+The focused change removes excerpt generation from Grok's second-round wire schema. Grok selects the source span; the application retrieves its exact text only after strict wire and span validation, then runs the canonical schema and existing source-binding checks. Unexpected quote fields and invalid spans remain failures. GPT and Claude evidence formats, first-round requests, assignments, judgments, retry limits and deadlines remain unchanged. New prompt provenance distinguishes application-resolved Grok excerpts from historical model-provided excerpts.
+
+Automated coverage for this change uses synthetic provider responses, not DTCC credentials or paid AWS calls. It exercises exact source-text retrieval, invalid spans and fields, assignment and verdict constraints, canonical output and backward compatibility. It cannot establish provider acceptance, response latency or detection accuracy. An authorized live rerun remains necessary to verify Grok's new citation format in the user's account.
+
+Validation: **118 Python tests and 371 TypeScript/SSR tests passed**, including 18 new server regressions and three report-provenance/compatibility regressions. Ruff, ESLint, TypeScript, Prettier, generated-artifact checks and the Next.js production build passed. The two existing Python dependency deprecation warnings remain. Browser interaction and live AWS execution were not tested in this verification run.
+
+## Claude second-review wire compatibility
+
+The next supplied live export shows accepted GPT and Grok second-round judgments; Claude again received HTTP 400, now classified as a structured-output `ValidationException`. Its first-round review succeeded. This supports targeting the second-round output configuration, but the exact rejected schema feature remains unproven.
+
+The compatibility adapter uses an all-string severity enum for Claude's second round and translates the explicit non-applicable marker to canonical null only after strict wire validation. Canonical validation and source binding then run unchanged. The automated provider fixture rejects the old nullable form and accepts the simpler form; this is a simulated compatibility regression, not proof of AWS acceptance.
+
+- **118 Python and 350 TypeScript/SSR tests passed**, including 11 additional adapter regressions; lint, type checks, formatting, generated-artifact checks and Next.js production build passed.
+- Tests cover supported/not-supported/uncertain conversion, refusal of raw null and invalid markers, inconsistent verdict/severity pairs, extra fields and bad evidence, unchanged GPT/Grok encoding, stable per-provider grammars, unchanged first-round records, canonical exports and unchanged request budgets.
+- No real AWS call or browser interaction test was performed for this compatibility update. A live rerun is required before calling the Claude issue resolved. Existing accepted and failed reports retain their original content and status.
+
+## Second-review failure diagnostics
+
+The supplied live Markdown export shows three accepted first-round reviews. In the second round GPT-6.1 Sol succeeded, Claude received HTTP 400 and Grok's response failed local evidence/assignment validation. The older export discarded both the upstream error body and the exact binding failure. It cannot establish Claude's rejected parameter or which Grok constraint failed. This follow-up fixes that diagnostic gap; it does not claim to have repaired or revalidated live provider execution.
+
+- Full offline check: **118 Python tests and 339 TypeScript/SSR tests passed**, including 20 additional diagnostic regressions; lint, types, formatting, generated-artifact checks and the Next.js production build passed.
+- Rejected requests are labelled separately from unavailable services. HTTP 400 classification is bounded and only exposes fixed hints and known exception names; raw messages, keys and unknown fields remain excluded.
+- Second-round validation reports the precise known field/constraint for schema, duplicate assignment, severity consistency, range and excerpt failures. It still rejects the entire invalid model response, retains accepted peer results and leaves the independent baseline unchanged.
+- Request formats, model selection, prompts, validation acceptance rules, retry limits and consensus arithmetic are unchanged. No live AWS calls or browser interaction tests were performed for this follow-up. Provider failures must be diagnosed from a new run after applying it; old error records cannot be recovered.
+
+## Targeted orchestration and human-adjudicated evaluation
+
+This record applies to the update built from the supplied repository archive. Earlier sections below describe historical releases and do not establish browser coverage for this update.
+
+| Check | Result |
+| --- | --- |
+| Python unit/API/artifact suite | **118 passed**; two existing test-client deprecation warnings |
+| TypeScript server, client, orchestration, evaluation and static parity suite | **319 passed**, including three real React server-render checks |
+| ESLint, TypeScript, Prettier and Ruff | Passed |
+| Generated showcase/schema drift and type regeneration | Passed; regenerated types are byte-identical |
+| Original five Solidity contracts | Byte-identical to the supplied archive |
+| Next.js production build | Passed; first/second review API routes, workspace, guide and documentation present |
+| Eight-page overview and three-page design brief | All 11 pages rendered and inspected; no visible dates; deterministic byte-identical regeneration |
+| Patch installer | Read-only preflight, exact text/binary application, idempotence, rollback, four focused local commits, edited/staged/untracked conflict refusal, symlink refusal and preservation of unrelated work checked |
+| Browser end-to-end interaction tests | **Not executed for this update**: the managed preview service injects Vite-only flags into Next.js; no application or infrastructure workaround was introduced |
+| Live AWS / production deployment | **Not performed**; no credentials from the conversation were used |
+
+The executable checks cover targeted per-model peer omissions, the documented severity-review extension, empty assignments making no calls, exact candidate/evidence validation, retained original support, explicit missing opinions, deferred claims and exact-baseline export binding. The unified report includes every accepted first-round claim. The grouping fix has an explicit aggregation version, and genuine legacy arithmetic reports remain readable. New static reports use engine 0.1.1; accepted 0.1.0 reports retain their original identities.
+
+Evaluation tests use simulated provider responses on the five unchanged sources. Human labels bind to both source and independent-baseline hashes. Metrics compare the same eligible model cohort, distinguish abstention from rejection and withhold unsupported accuracy measures. Agreement, typed output and exact source excerpts do not establish exploitability or improved accuracy.
+
+Recovery tests permit one explicit browser admission retry only after the server proves that no provider request started. Ambiguous interruption does not silently create another round. Replacing a key preserves completed reports; the browser regression cases cover dialog minimization and key replacement, but those interaction cases still require execution in a working browser environment. React server rendering validates report labels and escaping, not browser events or responsive layout.
+
+Reproduce the offline checks with `bash scripts/check.sh`. Run `npm --prefix apps/web run test:e2e` after installing the configured Playwright browser for desktop/mobile interaction verification. The existing CI workflow retains these browser checks. Authorized live calls, human adjudication and a deployed-site smoke test remain separate acceptance evidence.
+
 ## Documentation access and undated PDF resources
 
 Date: 2026-10-27. Included in the same unapplied second-review installer, based on merged PR #19.
@@ -206,3 +378,43 @@ The platform brief is now six pages, aligned with the implemented three-model wo
 - The four-file installer was checked against the previous three-model documentation state with both transport fixes applied. Compatibility-only operation, exact application, unchanged unrelated files, identical reruns and conflict rejection before writes were verified.
 
 This update changes only the PDF, its authoring script and documentation records. No application logic, model request, dependency, GitHub remote or Vercel deployment was changed.
+
+
+## Professional Review replacement
+
+This patch restores Static Analysis / Bedrock Review terminology and makes Findings,
+Second Review and Final Report separate manual stages. Evidence and model judgments
+remain available through expandable details. It removes automatic second-round calls.
+
+The complete offline check passed: **118 Python tests and 488 TypeScript/transport,
+controller and server-rendered UI tests**, Ruff, generated-artifact parity, ESLint,
+TypeScript, Prettier and the Next.js production build. Simulated upstream cases cover
+both rounds, all-model source-span binding, exact source reconstruction, malformed
+whole-batch rejection, historical provenance, transient recovery, time bounds,
+cancellation and incomplete model coverage. No mocked result is evidence of live AWS
+success or measured model accuracy.
+
+All three models now select source line spans in both rounds; the server retrieves
+and checks the submitted source text. New prompt versions identify this protocol.
+Historical reports retain their original citation method. Grok's documented medium
+reasoning setting is recorded for new runs; latency, cost and quality effects have
+not been measured with live calls.
+
+The updated eight-page Platform Overview and three-page Orchestration Design were
+rendered and visually inspected in full. Two builds produced identical bytes. The
+PDFs contain no visible dates. Browser interaction specifications were updated and
+discovered, but were not executed: the managed preview adapter supplied unsupported
+Vite startup flags to the Next.js application. No browser rendering or responsive
+interaction success is claimed for this replacement.
+
+The reversible installer supports the previously verified Diagnostics, Guided
+Review and Runtime Recovery file profiles. It checks exact bytes before writing,
+retains prior receipts, preserves unrelated changes, and refuses unsupported or
+conflicting source versions. Installation never commits, pushes or deploys.
+
+No live AWS credentials or billed model calls were used, and no GitHub/Vercel changes
+were made. The supplied Claude result was an upstream content-filter refusal; this
+patch does not override that refusal or mark missing model output as successful.
+Permission errors and provider outages remain explicit. Final Report eligibility is
+separate from full three-model coverage: an accepted partial second-round report can
+be inspected, but a cancelled/request-rejected run without a report cannot unlock it.

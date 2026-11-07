@@ -237,23 +237,23 @@ c.showPage()
 header(
     2,
     "Workspace & analysis modes",
-    "One workspace. Two analysis modes.",
-    "Prepare a single Solidity file, investigate candidate findings and export a source-linked report.",
+    "Independent findings. Deliberate second review.",
+    "Use Static Analysis or Bedrock Review, then inspect findings before starting a separate second round.",
 )
 col = (WIDTH - 28) / 2
 for i, (kicker, title, body, detail) in enumerate(
     [
         (
             "STATIC ANALYSIS",
-            "Run checks on-device",
+            "Run Static Analysis",
             "15 pattern rules inspect the submitted source in the browser. No API key or backend is required.",
             "The source stays on-device in this mode. Results provide a reproducible baseline with matched lines and recommended review actions.",
         ),
         (
-            "API ANALYSIS",
-            "Compare independent reviews",
+            "BEDROCK REVIEW",
+            "Run Bedrock Review",
             "Three parallel model reviews, using one Bedrock key:<br/>GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7.",
-            "The first pass reviews the source independently. An optional second review reconsiders selected claims with peer context.",
+            "Inspect Findings first. Open Second Review and select Run Second Review for eligible claims; it can add up to nine calls.",
         ),
     ]
 ):
@@ -269,19 +269,19 @@ table(
     ["Task", "Workspace interaction", "Review output"],
     [
         [
-            "Prepare",
-            "Upload .sol, edit source or choose a reference case",
-            "A numbered source snapshot; focus view for inspection",
+            "Add contract",
+            "Choose an example, upload a contract or paste code",
+            "A numbered source snapshot, kept with its review",
         ],
         [
-            "Investigate",
-            "Search; filter severity or model agreement; expand findings",
-            "Rationale, source excerpt, model contributions and action",
+            "Review",
+            "Run Bedrock Review; inspect Findings",
+            "Independent model findings, evidence and agreement",
         ],
         [
-            "Document",
-            "Jump to cited lines; open report details; download results",
-            "Source provenance and JSON or Markdown exports",
+            "Report",
+            "Run Second Review, then select View Final Report",
+            "Original findings, later judgments and unresolved issues",
         ],
     ],
     [118, 344, 350],
@@ -348,7 +348,7 @@ for i, (title, body) in enumerate(
     [
         (
             "01  Supervise",
-            "Enforce attempt and time limits. Retry eligible temporary failures once, retaining completed peer reviews.",
+            "Use one spare attempt for eligible service errors or a Second Review validation correction. Keep the deadline and accepted peers.",
         ),
         (
             "02  Validate & reconcile",
@@ -364,7 +364,7 @@ for i, (title, body) in enumerate(
     text(title, x, 432, model_w, 12, GREEN, True, 17)
     text(body, x, 458, model_w, 10.5, MUTED, leading=15)
 text(
-    "First-pass prompts exclude static findings and peer answers. The optional second review is a separate, peer-informed stage.",
+    "Initial prompts exclude static findings and peer answers. Second Review requires an explicit action and the exact initial record.",
     M,
     536,
     WIDTH,
@@ -388,11 +388,11 @@ for i, (title, body) in enumerate(
     [
         (
             "Validate the response structure",
-            "Required fields, allowed severity labels and content limits must satisfy the review schema.",
+            "Second Review uses 12 stable slots: assigned answers are explicit; unused slots must be null. Validated answers bind to trusted IDs.",
         ),
         (
             "Bind the evidence to the source",
-            "The stated line range must be valid. The excerpt must reproduce those original source lines exactly, with at most 12 lines per finding.",
+            "All models cite source spans in both rounds. The app checks valid spans of at most 12 lines and retrieves the exact original text.",
         ),
         (
             "Record the server's validation",
@@ -404,7 +404,7 @@ for i, (title, body) in enumerate(
     text(f"0{i + 1}", M, y, 30, 11, GREEN, True)
     text(title, M + 37, y, col - 37, 11.5, GREEN, True, 16)
     text(body, M + 37, y + 24, col - 37, 10.5, MUTED, leading=15)
-label("AGREEMENT-BASED CONFIDENCE", rx, 176, col, GREEN)
+label("MODEL AGREEMENT", rx, 176, col, GREEN)
 mini_w = (col - 20) / 3
 for i, (support, confidence) in enumerate(
     [("1 / 3", "LOW"), ("2 / 3", "MEDIUM"), ("3 / 3", "HIGH")]
@@ -466,12 +466,12 @@ c.showPage()
 # 5. A peer-informed second review preserves independent first-pass evidence.
 header(
     5,
-    "Peer-informed second review",
-    "Reconsider claims. Preserve the baseline.",
-    "One optional round revisits selected queued claims; its decisions stay separate from independent agreement.",
+    "Second Review",
+    "Reconsider differences. Keep the evidence.",
+    "Start Second Review explicitly after inspecting Findings; initial evidence and independent agreement stay unchanged.",
 )
 text(
-    "Successful first-pass reviewers inspect the same source and selected peer claims, including their own. Each returns support, rejection or uncertainty with rationale and exact source evidence.",
+    "Open Second Review, inspect assignments, then select Run Second Review. Successful initial reviewers reconsider peer omissions and severity disputes; failed initial models remain unavailable.",
     M,
     174,
     WIDTH,
@@ -486,9 +486,9 @@ for i, (value, title, detail) in enumerate(
         (
             "2+ reviewers",
             "FIRST-PASS ELIGIBILITY",
-            "Only successful first-pass models participate.",
+            "Empty assignments make no provider call.",
         ),
-        ("1 round", "EXPLICIT SECOND REVIEW", "At most six additional provider requests."),
+        ("1 round", "BOUNDED SECOND ROUND", "At most nine additional provider requests."),
     ]
 ):
     x = M + i * (card_w + 16)
@@ -498,17 +498,17 @@ for i, (value, title, detail) in enumerate(
     text(detail, x + 15, 291, card_w - 30, 8.8, MUTED, leading=12)
 table(
     332,
-    ["Second-pass observation", "Peer-informed summary", "Meaning for the reviewer"],
+    ["Effective model positions", "Final disposition", "Meaning for the reviewer"],
     [
         [
-            "All three support; same proposed severity",
+            "All three support; provenance retained",
             "Supported",
-            "A shared position to inspect, not proof of exploitability",
+            "Severity differences and pending reassessment still require review",
         ],
         [
             "All three explicitly reject the claim",
             "Not supported",
-            "A reconsidered claim, not a certified false positive",
+            "A model conclusion, not a certified false positive",
         ],
         [
             "Mixed, uncertain, missing or deferred",
@@ -520,7 +520,7 @@ table(
     [48, 48, 48],
 )
 text(
-    "Original authors may withdraw claims. Two agreeing reviewers with a missing third still leave the claim unresolved.",
+    "A failed reassessment retains valid original support and severity, with pending work marked explicitly.",
     M,
     518,
     WIDTH,
@@ -530,7 +530,7 @@ text(
     14,
 )
 text(
-    "This stage reconsiders existing selected claims. It does not discover issues missed by every first-pass model or add independent votes.",
+    "Final Report follows an accepted second-round result or an ineligibility reason. Retained evidence is not a new second-round vote.",
     M,
     541,
     WIDTH,
@@ -544,8 +544,8 @@ c.showPage()
 header(
     6,
     "Risk coverage & reporting",
-    "Connect risk findings to an audit trail.",
-    "Review recognizable source patterns, then retain the evidence and model context behind each result.",
+    "Read the risk. Decide the next action.",
+    "Start with risk priority, the source-grounded explanation and recommended action; expand the evidence when needed.",
 )
 col = (WIDTH - 30) / 2
 rx = M + col + 30
@@ -579,17 +579,17 @@ for i, (title, body) in enumerate(
     text(body, M, y + 23, col, 10.5, MUTED, leading=15)
     if i < 4:
         rule(y + 56, M, col)
-label("PROVENANCE & REVIEW RECORD", rx, 176, col, GREEN)
+label("FINAL REPORT & AUDIT TRAIL", rx, 176, col, GREEN)
 for i, (title, body) in enumerate(
     [
-        ("Source", "Filename and SHA-256 identify the analyzed source snapshot."),
+        ("Risk", "Severity overview, the reported risk and a concrete recommended action."),
         (
             "Run",
-            "Source identity, prompt settings, execution limits and separate first/second-pass records.",
+            "Coverage across both rounds, pending reassessments and retained original opinions.",
         ),
         (
             "Models",
-            "Model identities, attempts, outcomes, timings and available token usage; failed-attempt usage may be unknown.",
+            "Expandable model judgments and exact source evidence retain the audit trail.",
         ),
     ]
 ):
@@ -600,7 +600,7 @@ for i, (title, body) in enumerate(
 label("EXPORT FOR FOLLOW-UP", rx, 391, col, GREEN)
 text("JSON", rx, 414, 76, 11, GREEN, True)
 text(
-    "Static and first-pass records, validated reviews, optional second-pass decisions and provenance.",
+    "Final finding ledger, unchanged original rounds, per-model judgments and source provenance.",
     rx + 88,
     414,
     col - 88,
@@ -610,7 +610,7 @@ text(
 )
 text("Markdown", rx, 474, 76, 11, GREEN, True)
 text(
-    "Readable findings, attempts and contributions, with before/after decisions when a second review exists.",
+    "Risk summary, reported explanations, recommended actions and model-judgment history.",
     rx + 88,
     474,
     col - 88,
@@ -640,19 +640,19 @@ card_w = (WIDTH - 32) / 3
 for i, (value, title, detail) in enumerate(
     [
         (
-            "2 attempts",
+            "3 attempts",
             "PER MODEL / PASS, MAXIMUM",
-            "One initial call plus one eligible transient retry.",
+            "Shared by temporary-error recovery and format or evidence correction in either round.",
         ),
         (
-            "180 seconds",
+            "270 seconds",
             "PER MODEL / PASS, ABSOLUTE",
-            "210 seconds per server request. Retry time is included.",
+            "285 seconds per server request. Retries never reset the deadline.",
         ),
         (
-            "60 calls",
+            "90 calls",
             "FIVE CASES WITH BOTH PASSES, MAXIMUM",
-            "First pass only: 30 calls. Second review is optional.",
+            "First pass only: 45 calls. Second review is optional.",
         ),
     ]
 ):
@@ -689,15 +689,15 @@ for i, (title, body) in enumerate(
     [
         (
             "01  Fix the conditions",
-            "Choose a prompt variant and whether to include second review. Keep the five sources unchanged.",
+            "Open Review settings. Choose the prompt and batch review setting; keep the five sources unchanged.",
         ),
         (
             "02  Run sequentially",
             "Pair each second review with its own first-pass report. Cancel to stop new work and keep completed records.",
         ),
         (
-            "03  Export and compare",
-            "Retain execution and before/after decisions. Human-reviewed labels are needed to assess quality.",
+            "03  Adjudicate and compare",
+            "Import source-bound human labels. Precision needs reviewed predictions; recall needs a complete issue inventory.",
         ),
     ]
 ):
@@ -706,7 +706,7 @@ for i, (title, body) in enumerate(
     text(body, rx, y + 18, col, 9.5, MUTED, leading=13)
 box(M, 485, WIDTH, 48, PALE)
 text(
-    "A bounded retry addresses an eligible temporary error; it does not repair permissions or invalid evidence.",
+    "Content-filter and guardrail blocks are terminal. The app does not retry or rewrite input to bypass them.",
     M + 14,
     495,
     WIDTH - 28,
@@ -716,7 +716,7 @@ text(
     15,
 )
 text(
-    "Compare execution outcomes first. Quality claims require human-reviewed findings; model agreement is not accuracy.",
+    "Keep the other results. Ask the AWS administrator/provider to review permitted use if the blocked model is required.",
     M + 14,
     515,
     WIDTH - 28,
@@ -752,16 +752,16 @@ for i, (title, body) in enumerate(
             "Open a reference case, upload one .sol file or edit the source directly.",
         ),
         (
-            "Add your Bedrock key",
-            "Select API analysis, paste the complete key and choose Use API key. Adding it checks format; analysis verifies model access.",
+            "Connect Bedrock",
+            "Select Bedrock Review, paste the key and choose Use API key. Saving checks format; it does not start paid work.",
         ),
         (
-            "Run and inspect",
-            "Choose Run API analysis, then inspect all three model outcomes, consolidated findings and original contributions.",
+            "Run Bedrock Review",
+            "Inspect Findings after the first round. Open Second Review, then explicitly select Run Second Review.",
         ),
         (
-            "Export and clear",
-            "Download JSON or Markdown. Select Clear key or refresh the page to remove the active key from the tab.",
+            "Read, export and clear",
+            "Select View Final Report after an accepted second-round result or stated ineligibility. Export before refreshing or clearing the key.",
         ),
     ]
 ):
@@ -794,7 +794,7 @@ text(
     leading=14,
 )
 text(
-    "A successful empty review, partial coverage or a completed run does not establish that a contract is safe.",
+    "Two completed assigned second reviews can still mean only 2 / 3 initial reviews. No completed run establishes safety.",
     rx,
     417,
     col,

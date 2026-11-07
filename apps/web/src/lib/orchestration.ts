@@ -4,10 +4,14 @@ import { validateModelReview } from "@/lib/report";
 import {
   POLICY_VERSION,
   PROMPT_VERSION,
-  REVIEW_POLICY,
+  reviewPolicyLimits,
+  type ReviewPolicyVersion,
   type PromptVariant,
+  type IndependentPromptVersion,
 } from "@/lib/review-policy";
 import { sha256, sourceLines } from "@/lib/static-analysis";
+
+export const AGGREGATION_VERSION = "source-locus-v2" as const;
 
 /** Shared vocabulary for independent model prompts and deterministic aggregation. */
 export const CATEGORIES = [
@@ -59,10 +63,10 @@ export type ConsensusFinding = ReviewFinding & {
 };
 
 export type ExecutionProvenance = {
-  policy_version: typeof POLICY_VERSION;
+  policy_version: ReviewPolicyVersion;
   prompt_variant: PromptVariant;
-  prompt_version: typeof PROMPT_VERSION;
-  max_attempts_per_model: 2;
+  prompt_version: IndependentPromptVersion;
+  max_attempts_per_model: 2 | 3;
   model_timeout_ms: number;
   overall_timeout_ms: number;
   total_attempts: number;
@@ -82,6 +86,8 @@ export type ReviewQueueItem = {
 };
 
 type CouncilBase = {
+  /** Absent in pre-v2 records, which retain the original arithmetic grouping. */
+  aggregation_version?: typeof AGGREGATION_VERSION;
   engine: "evidence-consensus";
   source_sha256: string;
   created_at: string;
@@ -104,6 +110,34 @@ export type CouncilReport = CouncilBase &
         review_queue: ReviewQueueItem[];
       }
   );
+
+/** Preserve the evidence method recorded by the original prompt version. */
+export function firstReviewEvidenceMethod(
+  report: Pick<CouncilReport, "execution">,
+) {
+  return report.execution?.prompt_version === PROMPT_VERSION ||
+    report.execution?.prompt_version ===
+      "independent-review-v4-reader-focused-source-spans-grok-medium" ||
+    report.execution?.prompt_version ===
+      "independent-review-v3-source-spans-grok-medium"
+    ? "Model-selected lines; excerpt retrieved from the submitted source."
+    : "Model-provided excerpt; exact match to the submitted source.";
+}
+
+/** Configuration provenance, not a measured latency or accuracy guarantee. */
+export function firstReviewReasoningEffort(
+  report: Pick<CouncilReport, "execution">,
+  modelId: string,
+) {
+  return (report.execution?.prompt_version === PROMPT_VERSION ||
+    report.execution?.prompt_version ===
+      "independent-review-v4-reader-focused-source-spans-grok-medium" ||
+    report.execution?.prompt_version ===
+      "independent-review-v3-source-spans-grok-medium") &&
+    modelId === "us.xai.grok-4.7"
+    ? "medium"
+    : "provider default";
+}
 
 const severityRank = { HIGH: 3, MEDIUM: 2, LOW: 1 } as const;
 const maximumElapsedMs = 3_600_000;
@@ -199,7 +233,7 @@ const anchorPatterns: Record<string, RegExp> = {
   "unchecked-call": /\.\s*(?:call|send|delegatecall|staticcall)\s*(?=[({])/g,
   delegatecall: /\.\s*delegatecall\s*(?=[({])/g,
   selfdestruct: /\b(?:selfdestruct|suicide)\s*\(/g,
-  arithmetic: /\+\+|--|[+*/%]=?|-(?!=)|\bunchecked\b/g,
+  arithmetic: /\+\+|--|[+*/%-]=?|\bunchecked\b/g,
   "timestamp-dependence": /\b(?:block\s*\.\s*timestamp|now)\b/g,
   "weak-randomness":
     /\b(?:blockhash|block\s*\.\s*(?:timestamp|prevrandao|difficulty))\b/g,
@@ -213,13 +247,17 @@ function groupingKey(
   code: string,
   offsets: number[],
   scopes: Scope[],
+  legacyArithmetic = false,
 ): { category: string; locus: string } {
   const category = categoryOf(finding);
   const start = offsets[finding.evidence.line_start - 1];
   const end = offsets[finding.evidence.line_end] ?? code.length;
-  const pattern = Object.hasOwn(anchorPatterns, category)
-    ? anchorPatterns[category]
-    : undefined;
+  const pattern =
+    legacyArithmetic && category === "arithmetic"
+      ? /\+\+|--|[+*/%]=?|-(?!=)|\bunchecked\b/g
+      : Object.hasOwn(anchorPatterns, category)
+        ? anchorPatterns[category]
+        : undefined;
   if (pattern) {
     const anchors = [...code.slice(start, end).matchAll(pattern)];
     // A unique operation is an objective locus, independent of title or window.
@@ -301,29 +339,59 @@ function validateExecution(value: unknown): ExecutionProvenance {
       "overall_timeout_ms",
       "total_attempts",
     ]) ||
-    value.policy_version !== POLICY_VERSION ||
-    value.prompt_version !== PROMPT_VERSION ||
-    !["baseline", "few-shot"].includes(value.prompt_variant as string) ||
-    value.max_attempts_per_model !== REVIEW_POLICY.max_attempts_per_model ||
+    !(
+      (value.policy_version === POLICY_VERSION &&
+        value.prompt_version === PROMPT_VERSION) ||
+      (value.policy_version === "bounded-review-v2-network-recovery" &&
+        [
+          "independent-review-v4-reader-focused-source-spans-grok-medium",
+          "independent-review-v3-source-spans-grok-medium",
+          "independent-review-v2",
+        ].includes(value.prompt_version as string)) ||
+      (value.policy_version === "bounded-review-v1" &&
+        value.prompt_version === "independent-review-v2")
+    ) ||
+    !["baseline", "few-shot"].includes(value.prompt_variant as string)
+  )
+    throw new Error("Invalid bounded orchestration policy.");
+  const limits = reviewPolicyLimits(
+    value.policy_version as ReviewPolicyVersion,
+  );
+  if (
+    value.max_attempts_per_model !== limits.max_attempts_per_model ||
     !duration(value.model_timeout_ms) ||
     value.model_timeout_ms < 1 ||
-    value.model_timeout_ms > REVIEW_POLICY.model_timeout_ms ||
+    value.model_timeout_ms > limits.model_timeout_ms ||
     !duration(value.overall_timeout_ms) ||
     value.overall_timeout_ms < 1 ||
-    value.overall_timeout_ms > REVIEW_POLICY.overall_timeout_ms ||
+    value.overall_timeout_ms > limits.overall_timeout_ms ||
     !Number.isSafeInteger(value.total_attempts) ||
     (value.total_attempts as number) < 0 ||
-    (value.total_attempts as number) > REVIEW_POLICY.max_provider_requests
+    (value.total_attempts as number) > limits.max_provider_requests
   )
     throw new Error("Invalid bounded orchestration policy.");
   return value as ExecutionProvenance;
 }
 
-function validateAttempts(entry: ModelRun) {
+function validateAttempts(entry: ModelRun, policy: ExecutionProvenance) {
+  const validationRecovery = policy.policy_version === POLICY_VERSION;
+  const networkRecovery = policy.policy_version !== "bounded-review-v1";
+  const maximumDelay = networkRecovery
+    ? Math.min(policy.model_timeout_ms, policy.overall_timeout_ms)
+    : 5_000;
+  // The current supervisor never accepts a result after its absolute deadline.
+  // Allow only small integer-rounding drift when summing at most three attempts.
+  if (
+    validationRecovery &&
+    entry.status === "succeeded" &&
+    entry.elapsed_ms >
+      Math.min(policy.model_timeout_ms, policy.overall_timeout_ms) + 10
+  )
+    throw new Error("Successful review exceeds its execution deadline.");
   const attempts = entry.attempts;
   if (
     !Array.isArray(attempts) ||
-    attempts.length > REVIEW_POLICY.max_attempts_per_model
+    attempts.length > policy.max_attempts_per_model
   )
     throw new Error("Invalid model attempt history.");
   const terminalTimeout =
@@ -350,7 +418,10 @@ function validateAttempts(entry: ModelRun) {
       attempt.attempt !== index + 1 ||
       !duration(attempt.elapsed_ms) ||
       !duration(attempt.retry_delay_ms) ||
-      attempt.retry_delay_ms > 5_000 ||
+      attempt.retry_delay_ms > maximumDelay ||
+      (networkRecovery &&
+        index > 0 &&
+        measured + attempt.retry_delay_ms >= maximumDelay) ||
       (index === 0 && attempt.retry_delay_ms !== 0) ||
       (attempt.status !== "succeeded" && attempt.status !== "failed") ||
       (attempt.status === "succeeded"
@@ -361,9 +432,14 @@ function validateAttempts(entry: ModelRun) {
     if (
       index > 0 &&
       (attempts[index - 1].status !== "failed" ||
-        !["bedrock_rate_limit", "bedrock_unavailable"].includes(
-          attempts[index - 1].error_code ?? "",
-        ))
+        ![
+          "bedrock_rate_limit",
+          "bedrock_unavailable",
+          ...(networkRecovery ? ["bedrock_network"] : []),
+          ...(validationRecovery
+            ? ["invalid_report", "invalid_evidence", "bedrock_model_timeout"]
+            : []),
+        ].includes(attempts[index - 1].error_code ?? ""))
     )
       throw new Error("A non-transient failure cannot be retried.");
     measured += attempt.elapsed_ms + attempt.retry_delay_ms;
@@ -383,7 +459,7 @@ function validateAttempts(entry: ModelRun) {
 async function validateModels(
   value: unknown,
   source: string,
-  withAttempts = false,
+  policy?: ExecutionProvenance,
 ): Promise<ModelRun[]> {
   if (!Array.isArray(value) || value.length !== BEDROCK_MODELS.length)
     throw new Error("Every configured model must have an explicit outcome.");
@@ -399,7 +475,7 @@ async function validateModels(
         "elapsed_ms",
         "review",
         "error",
-        ...(withAttempts ? ["attempts"] : []),
+        ...(policy ? ["attempts"] : []),
       ])
     )
       throw new Error("Invalid model outcome.");
@@ -422,7 +498,7 @@ async function validateModels(
         review.protocol !== BEDROCK.protocol ||
         !timestamp(review.created_at) ||
         !duration(review.elapsed_ms) ||
-        (withAttempts
+        (policy
           ? review.elapsed_ms > entry.elapsed_ms
           : review.elapsed_ms !== entry.elapsed_ms) ||
         [review.input_tokens, review.output_tokens].some(
@@ -449,7 +525,7 @@ async function validateModels(
     } else {
       throw new Error("Invalid model status.");
     }
-    if (withAttempts) validateAttempts(entry as ModelRun);
+    if (policy) validateAttempts(entry as ModelRun, policy);
     models.push(entry as ModelRun);
   }
   return BEDROCK_MODELS.map((config) =>
@@ -461,6 +537,7 @@ async function aggregate(
   models: ModelRun[],
   source: string,
   hash: string,
+  legacyArithmetic = false,
 ): Promise<ConsensusFinding[]> {
   const normalized = sourceLines(source).join("\n");
   const code = executableSource(normalized);
@@ -482,7 +559,13 @@ async function aggregate(
   for (const model of models) {
     if (model.status !== "succeeded" || !model.review) continue;
     model.review.findings.forEach((finding, finding_index) => {
-      const { category, locus } = groupingKey(finding, code, offsets, scopes);
+      const { category, locus } = groupingKey(
+        finding,
+        code,
+        offsets,
+        scopes,
+        legacyArithmetic,
+      );
       const key = `${category}|${locus}`;
       const group = groups.get(key) ?? { category, entries: [] };
       group.entries.push({ model_id: model.model_id, finding_index, finding });
@@ -597,11 +680,12 @@ export async function buildCouncilReport(
   if (!duration(elapsedMs)) throw new Error("Invalid orchestration duration.");
   const policy =
     execution === undefined ? undefined : validateExecution(execution);
-  const checked = await validateModels(models, source, !!policy);
+  const checked = await validateModels(models, source, policy);
   if (policy) validateAccounting(policy, checked, elapsedMs);
   const hash = await sha256(source);
   const findings = await aggregate(checked, source, hash);
   const report: CouncilBase = {
+    aggregation_version: AGGREGATION_VERSION,
     engine: "evidence-consensus" as const,
     source_sha256: hash,
     created_at: new Date().toISOString(),
@@ -650,6 +734,9 @@ export async function validateCouncil(
     !exactKeys(value, [
       "schema_version",
       "engine",
+      ...(Object.hasOwn(value, "aggregation_version")
+        ? ["aggregation_version"]
+        : []),
       "source_sha256",
       "created_at",
       "elapsed_ms",
@@ -660,6 +747,8 @@ export async function validateCouncil(
     ]) ||
     (!withExecution && value.schema_version !== "2.0.0") ||
     value.engine !== "evidence-consensus" ||
+    (Object.hasOwn(value, "aggregation_version") &&
+      value.aggregation_version !== AGGREGATION_VERSION) ||
     !timestamp(value.created_at) ||
     !duration(value.elapsed_ms)
   )
@@ -668,9 +757,14 @@ export async function validateCouncil(
   if (value.source_sha256 !== hash)
     throw new Error("Orchestration report does not match this source.");
   const policy = withExecution ? validateExecution(value.execution) : undefined;
-  const models = await validateModels(value.models, source, withExecution);
+  const models = await validateModels(value.models, source, policy);
   if (policy) validateAccounting(policy, models, value.elapsed_ms);
-  const findings = await aggregate(models, source, hash);
+  const findings = await aggregate(
+    models,
+    source,
+    hash,
+    !Object.hasOwn(value, "aggregation_version"),
+  );
   if (
     value.status !== outcome(models) ||
     !equivalent(value.models, models) ||

@@ -49,26 +49,29 @@ export default function GuidePage() {
           <p className="eyebrow">PLATFORM GUIDE</p>
           <h1>Connection &amp; analysis</h1>
           <p>
-            Run static checks in your browser, or connect your own AWS Bedrock
-            account for three independent model reviews.
+            Run Static Analysis or connect AWS Bedrock. Inspect first-round
+            findings, initiate Second Review, then examine the Final Report.
           </p>
         </div>
         <nav className="guide-index" aria-label="Guide sections">
-          <a href="#static">Static analysis</a>
-          <a href="#bedrock">Connect Bedrock</a>
-          <a href="#reports">Read the report</a>
-          <a href="#second-review">Second review</a>
+          <a href="#static">Static Analysis</a>
+          <a href="#bedrock">Bedrock Review</a>
+          <a href="#reports">Findings</a>
+          <a href="#second-review">Second Review</a>
           <a href="#evaluation">Validate five cases</a>
           <a href="#local">Run locally</a>
         </nav>
         <section id="static" className="guide-section">
           <span className="guide-number">01</span>
           <div>
-            <h2>Start with static analysis</h2>
+            <h2>Prepare the source and run Static Analysis</h2>
             <p>
-              Open a reference case, upload a single <code>.sol</code> file, or
-              edit the source. Select <strong>Static analysis</strong> and run
-              the check. Source stays in your browser; no API key is required.
+              Choose a reference case, select <strong>Upload contract</strong>,
+              or paste code using <strong>Edit source</strong>. To try the
+              platform without an account, select{" "}
+              <strong>Static Analysis</strong>, then
+              <strong> Run Static Analysis</strong>. Source stays in your
+              browser; no API key is required.
             </p>
             <p>
               The input limit is 48,000 UTF-8 bytes, 1,200 lines and 2,000
@@ -80,7 +83,7 @@ export default function GuidePage() {
         <section id="bedrock" className="guide-section">
           <span className="guide-number">02</span>
           <div>
-            <h2>Connect AWS Bedrock</h2>
+            <h2>Connect and run Bedrock Review</h2>
             <p>
               One Bedrock key connects all three models. In your DevX AWS
               session, select <strong>US East (N. Virginia)</strong>, then open
@@ -90,10 +93,12 @@ export default function GuidePage() {
               quotes.
             </p>
             <p>
-              In the workspace, select <strong>API analysis</strong>, paste the
-              key and choose <strong>Use API key</strong>. Then select
-              <strong> Run API analysis</strong> for your contract. The hosted
-              website handles the full workflow; no terminal is required.
+              In the workspace, select <strong>Bedrock Review</strong>, paste
+              the key and choose <strong>Use API key</strong>. Select
+              <strong> Run Bedrock Review</strong> to run three independent
+              analyses. The workspace stops at <strong>Findings</strong> for
+              inspection. Second Review is a separate action; it never starts
+              automatically. The hosted website requires no terminal.
             </p>
             <dl className="guide-definitions">
               <div>
@@ -127,8 +132,9 @@ export default function GuidePage() {
               server to AWS. Your AWS account&apos;s model permissions, logging
               settings and usage charges apply. Each model reviews the source
               independently in the first round, without seeing static findings
-              or peer results. An optional second round shares selected,
-              source-validated peer claims for reassessment.
+              or peer results. An explicitly started second round can add up to
+              nine model calls and shares selected peer claims for reassessment.
+              Adding a key or changing modes does not start paid analysis.
             </aside>
             <p>
               The application holds your key only in this tab&apos;s memory and
@@ -140,29 +146,33 @@ export default function GuidePage() {
             <p>
               If a key expires, generate and enter a fresh one. If one model is
               denied access, ask your AWS administrator to check its permissions
-              and first-use requirements. A partial run retains successful
-              reviews and identifies failed models. Each model can retry one
-              eligible temporary service failure within its original 180-second
-              deadline. The server run is limited to 210 seconds and six
-              provider requests. Invalid access or invalid evidence is not
-              retried. Cancelling may not stop AWS work already in progress.
+              and first-use requirements. If a response is blocked by a content
+              filter or guardrail, read the model explanation and keep the other
+              results. Refreshing or replacing the key is not an established fix
+              for filtering; ask your AWS administrator/provider to review the
+              legitimate use case. The application does not rewrite or retry
+              filtered input to bypass that decision.
             </p>
           </div>
         </section>
         <section id="reports" className="guide-section">
           <span className="guide-number">03</span>
           <div>
-            <h2>Review the evidence and export</h2>
+            <h2>Inspect the first-round Findings</h2>
             <p>
-              Filter findings by severity or search by title, category or rule.
-              Open a finding to read its rationale, source excerpt and
-              recommended action. Select its line number to inspect the code.
+              Review <strong>Findings</strong> after Bedrock Review. Check how
+              many models completed, compare their original contributions and
+              inspect each finding&apos;s evidence and proposed severity. The
+              review queue identifies omitted peer findings, severity disputes
+              and missing coverage. The independent record remains unchanged
+              when a second round is run.
             </p>
             <p>
-              The orchestration layer groups compatible model findings by
-              weakness and source location. One supporting model gives LOW
-              agreement, two give MEDIUM, and three give HIGH. Agreement is
-              separate from severity and does not represent a probability.
+              Model support tells you how many models agree with a finding. It
+              is separate from severity, which describes the proposed impact.
+              Agreement is not an accuracy score. Two successful initial checks
+              and two successful assigned second-round reviews still leave
+              overall coverage at two of three models.
             </p>
             <p>
               Each group keeps its original model findings. The highest proposed
@@ -195,36 +205,53 @@ export default function GuidePage() {
         <section id="second-review" className="guide-section">
           <span className="guide-number">04</span>
           <div>
-            <h2>Reassess disputed findings once</h2>
+            <h2>Run Second Review, then open Final Report</h2>
             <p>
-              After an independent API review, choose{" "}
-              <strong>Run second review</strong>. At least two first-round
-              models must have completed. Each eligible model reassesses up to
-              12 queued candidates using the source and the original claims.
-              Remaining candidates are explicitly deferred. A finding not
-              reported in the first round is a reason to ask for reassessment,
-              not evidence that the model rejected it.
+              Open <strong>Second Review</strong> after inspecting the
+              first-round findings, then select{" "}
+              <strong>Run Second Review</strong>. At least two successful
+              initial reviews and actionable differences are required. Models
+              reconsider peer findings they omitted and severity disputes. Empty
+              assignments make no call; at most 12 claims are selected. A model
+              that failed its initial review is not recovered by this stage. If
+              no second review is eligible, read the stated reason before
+              opening the available final report.
             </p>
             <p>
               Each model must answer <strong>Supported</strong>,{" "}
               <strong>Not supported</strong>, or <strong>Uncertain</strong>,
-              with a rationale and exact source evidence. Models can withdraw
-              their original support. The new results are labeled peer-informed;
-              they never replace the first report or increase its independent
-              confidence score.
+              with a rationale and exact source evidence. An assigned reviewer
+              can change its position. If a reassessment fails, any valid
+              first-round finding and its severity remain recorded, with that
+              reassessment marked pending. Retained evidence is not a fresh
+              confirmation. Accepted later uncertainty or rejection replaces the
+              earlier position. The original independent report stays unchanged.
             </p>
             <p>
-              This adds one round of at most six provider calls, with the same
-              retry and time limits as the first round. The two rounds use
-              separate requests, each with a 210-second server deadline. Cancel
-              or failure preserves the independent results. A new independent
-              review is required to start another second-round attempt in this
-              workspace; there is no automatic debate loop.
+              Each stage allows at most three attempts per model within 270
+              seconds, with a 285-second server deadline. Both stages together
+              allow at most eighteen provider calls. Selected temporary errors
+              and remote model timeouts can use a remaining attempt. Either
+              round can also request a complete corrected response after local
+              format or evidence rejection. These recoveries share the same
+              attempt budget and never reset a deadline. The new response must
+              pass all checks; no evidence is invented. Invalid access, blocked
+              content and cancellation are not retried. Cancel or failure
+              preserves accepted initial results. Closing the panel lets work
+              continue; use its cancel control to stop. Already accepted AWS
+              work may still be billed. There is no automatic debate loop.
             </p>
             <p>
-              Missing, uncertain, conflicting, or deferred judgments remain
-              unresolved. A unanimous peer-informed conclusion still requires
-              human validation.
+              After a validated second-round result, including a partial result,
+              select <strong>View Final Report</strong> to open it directly. A
+              cancelled or failed request keeps the first-round findings and
+              export available, without unlocking the final report solely
+              because a request was attempted. The final report starts with risk
+              priority, the reported risk and recommended action. Expand model
+              judgments and source evidence for the audit trail. Pending
+              reassessments, missing coverage and disputed severity remain
+              visible even when all recorded opinions support a finding. Even
+              unanimous support requires human validation.
             </p>
             <a
               className="guide-document"
@@ -245,28 +272,29 @@ export default function GuidePage() {
           <div>
             <h2>Compare prompts on the same five cases</h2>
             <p>
-              Choose <strong>Standard</strong> or{" "}
-              <strong>Guided examples</strong> before API analysis. Both use the
-              same models and output rules. Guided examples add separate
-              synthetic examples of grounded findings and benign lookalikes;
-              they do not include answers from the reference contracts or
-              another model&apos;s review.
+              Open <strong>Review settings</strong> and choose
+              <strong> Standard</strong> or <strong>Guided examples</strong>
+              before Bedrock Review. Both use the same models and output rules.
+              Guided examples add separate synthetic examples of grounded
+              findings and benign lookalikes; they do not include answers from
+              the reference contracts or another model&apos;s review.
             </p>
             <p>
-              Open <strong>Validate 5 cases</strong> to run the five existing
-              contracts one at a time. One prompt variant can make at most 30
+              Within <strong>Review settings</strong>, open
+              <strong> Validate 5 cases</strong> to run the five existing
+              contracts one at a time. One prompt variant can make at most 45
               provider requests, including retries. Start the other variant
               separately when ready. Cancel to stop subsequent cases; completed
               records remain available for export.
             </p>
             <p>
-              Enable <strong>Include second review</strong> for a paired
-              experiment: each case keeps its exact independent result and adds
-              one eligible second review. This mode allows at most 60 provider
-              requests and 40 minutes per five-case batch. Cases with no
-              eligible disagreements skip additional model calls. Access or
-              rate-limit failures stop remaining cases rather than repeating
-              them.
+              This batch has its own setting. Enable
+              <strong> Include second review</strong> for a paired experiment:
+              each case keeps its exact independent result and adds one eligible
+              second review. This mode allows at most 90 provider requests and
+              about 50 minutes per five-case batch. Cases with no eligible
+              disagreements skip additional model calls. Access or rate-limit
+              failures stop remaining cases rather than repeating them.
             </p>
             <p>
               Compare new support, withdrawn support, uncertain judgments, and
@@ -279,9 +307,11 @@ export default function GuidePage() {
               Download the evaluation JSON to compare completion, attempts,
               latency, available token usage and differences between findings.
               Returned token counters may omit failed-attempt usage. These are
-              operational measures; detection accuracy needs human-reviewed
-              claims. Agreement or successful execution alone does not establish
-              an improvement from guided examples.
+              operational measures. Keep bounded run history or import a saved
+              run, then import source-bound human adjudications. Quality metrics
+              remain unavailable until their label requirements are met; recall
+              also needs a complete reviewed issue inventory. Agreement alone
+              does not establish improved accuracy.
             </p>
           </div>
         </section>

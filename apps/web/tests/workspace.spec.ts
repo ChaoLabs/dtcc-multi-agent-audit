@@ -8,6 +8,7 @@ import { analyzeStatic } from "../src/lib/static-analysis";
 import {
   POLICY_VERSION,
   PROMPT_VERSION,
+  REVIEW_POLICY,
   type PromptVariant,
 } from "../src/lib/review-policy";
 
@@ -123,9 +124,9 @@ async function supervisedFixture(
       policy_version: POLICY_VERSION,
       prompt_variant: variant,
       prompt_version: PROMPT_VERSION,
-      max_attempts_per_model: 2,
-      model_timeout_ms: 180_000,
-      overall_timeout_ms: 210_000,
+      max_attempts_per_model: REVIEW_POLICY.max_attempts_per_model,
+      model_timeout_ms: REVIEW_POLICY.model_timeout_ms,
+      overall_timeout_ms: REVIEW_POLICY.overall_timeout_ms,
       total_attempts: retry ? 4 : 3,
     },
   );
@@ -134,7 +135,7 @@ async function supervisedFixture(
 async function runApi(page: import("@playwright/test").Page) {
   await apiMode(page);
   await page
-    .getByRole("button", { name: "Run API analysis", exact: true })
+    .getByRole("button", { name: "Run Bedrock Review", exact: true })
     .click();
 }
 
@@ -147,7 +148,7 @@ async function exportedJson(page: import("@playwright/test").Page) {
 const production = "http://127.0.0.1:3100";
 const jsonButton = "Download JSON report";
 async function apiMode(page: import("@playwright/test").Page) {
-  await page.getByRole("button", { name: /^API analysis/ }).click();
+  await page.getByRole("button", { name: /^Bedrock Review/ }).click();
   await page
     .getByLabel("Bedrock API key", { exact: true })
     .fill("bedrock-api-key-SYNTHETIC_BROWSER_TEST");
@@ -174,6 +175,9 @@ test("desktop and mobile design, logo, keyboard details and reference cases", as
   await page.evaluate(() => document.fonts.ready);
   if (testInfo.project.name === "desktop") {
     await page.setViewportSize({ width: 1440, height: 900 });
+    await page
+      .locator(".finding.is-expanded .finding-evidence-details > summary")
+      .click();
     await page.getByRole("button", { name: "Line 22", exact: true }).click();
     await expect(
       page.locator('.code-line.highlight[data-line="22"]'),
@@ -230,13 +234,13 @@ test("public static analysis runs on device with no API requests", async ({
     );
   await expect(page.getByRole("button", { name: jsonButton })).toBeDisabled();
   await page
-    .getByRole("button", { name: "Run static analysis", exact: true })
+    .getByRole("button", { name: "Run Static Analysis", exact: true })
     .click();
   await expect(
     page.getByRole("button", { name: /tx.origin authorization/ }),
   ).toBeVisible();
   await expect(
-    page.getByText("Static analysis complete", { exact: true }),
+    page.getByText("Static Analysis complete", { exact: true }),
   ).toBeVisible();
   expect(apiCalls).toEqual([]);
 });
@@ -296,7 +300,7 @@ test("edits and filenames invalidate results; zero findings is no safety claim",
     .fill("pragma solidity ^0.8.20;\ncontract Benign {}");
   await expect(page.getByRole("button", { name: jsonButton })).toBeDisabled();
   await page
-    .getByRole("button", { name: "Run static analysis", exact: true })
+    .getByRole("button", { name: "Run Static Analysis", exact: true })
     .click();
   await expect(
     page.getByRole("heading", { name: "No candidates flagged" }),
@@ -323,7 +327,7 @@ test("source markup renders as text", async ({ page }) => {
       "pragma solidity ^0.8.20;\n// </script><img src=x onerror=alert(1)>\ncontract C {}",
     );
   await page
-    .getByRole("button", { name: "Run static analysis", exact: true })
+    .getByRole("button", { name: "Run Static Analysis", exact: true })
     .click();
   await expect(
     page.getByRole("heading", { name: "No candidates flagged" }),
@@ -385,7 +389,7 @@ test("public connection accepts a memory-only key without contacting AWS or loca
       requests.push(r.url());
   });
   await page.goto(production);
-  await page.getByRole("button", { name: /^API analysis/ }).click();
+  await page.getByRole("button", { name: /^Bedrock Review/ }).click();
   await expect(
     page.getByLabel("Bedrock API key", { exact: true }),
   ).toBeVisible();
@@ -404,7 +408,9 @@ test("public connection accepts a memory-only key without contacting AWS or loca
   const key = "bedrock-api-key-" + "SYNTHETIC_".repeat(800);
   await page.getByLabel("Bedrock API key", { exact: true }).fill(key);
   await page.getByRole("button", { name: "Use API key", exact: true }).click();
-  await page.getByRole("button", { name: /^API analysis/ }).click();
+  await page
+    .getByRole("button", { name: "Connection settings", exact: true })
+    .click();
   await expect(page.locator(".connection-status")).toContainText("Key ready");
   await expect(page.getByLabel("Bedrock API key", { exact: true })).toHaveValue(
     "",
@@ -415,7 +421,7 @@ test("public connection accepts a memory-only key without contacting AWS or loca
   expect(await page.context().cookies()).toEqual([]);
   expect(await page.content()).not.toContain(key);
   await page.reload();
-  await page.getByRole("button", { name: /^API analysis/ }).click();
+  await page.getByRole("button", { name: /^Bedrock Review/ }).click();
   await expect(page.locator(".connection-status")).toContainText(
     "No API key connected",
   );
@@ -426,7 +432,7 @@ test("invalid keys are rejected and clearing removes the current connection", as
   page,
 }) => {
   await page.goto(production);
-  await page.getByRole("button", { name: /^API analysis/ }).click();
+  await page.getByRole("button", { name: /^Bedrock Review/ }).click();
   await page
     .getByLabel("Bedrock API key", { exact: true })
     .fill("export AWS_BEARER_TOKEN_BEDROCK=not-a-key");
@@ -438,14 +444,16 @@ test("invalid keys are rejected and clearing removes the current connection", as
     .getByLabel("Bedrock API key", { exact: true })
     .fill("bedrock-api-key-SYNTHETIC_BROWSER_TEST");
   await page.getByRole("button", { name: "Use API key", exact: true }).click();
-  await page.getByRole("button", { name: /^API analysis/ }).click();
+  await page
+    .getByRole("button", { name: "Connection settings", exact: true })
+    .click();
   await page.getByRole("button", { name: "Clear key", exact: true }).click();
   await expect(page.locator(".connection-status")).toContainText(
     "No API key connected",
   );
   await page.getByRole("button", { name: "Return to workspace" }).click();
   await page
-    .getByRole("button", { name: "Run API analysis", exact: true })
+    .getByRole("button", { name: "Run Bedrock Review", exact: true })
     .click();
   await expect(page.getByRole("dialog", { name: "AWS Bedrock" })).toBeVisible();
 });
@@ -457,13 +465,14 @@ test("API failures retain clearly identified static results", async ({
   await page.goto("/");
   await apiMode(page);
   await page
-    .getByRole("button", { name: "Run API analysis", exact: true })
+    .getByRole("button", { name: "Run Bedrock Review", exact: true })
     .click();
   await expect(
     page.getByRole("region", { name: /Findings/ }).getByRole("alert"),
   ).toContainText("Cannot reach the analysis service");
   await expect(page.getByRole("button", { name: jsonButton })).toBeEnabled();
   await expect(page.locator(".consensus-summary")).toHaveCount(0);
+  await page.locator(".findings-options > summary").click();
   await page
     .getByRole("group", { name: "Result source" })
     .getByRole("button", { name: /^Static baseline/ })
@@ -483,7 +492,7 @@ test("schema-invalid API response is not accepted", async ({ page }) => {
   await page.goto("/");
   await apiMode(page);
   await page
-    .getByRole("button", { name: "Run API analysis", exact: true })
+    .getByRole("button", { name: "Run Bedrock Review", exact: true })
     .click();
   await expect(
     page.getByRole("region", { name: /Findings/ }).getByRole("alert"),
@@ -501,13 +510,13 @@ test("three independent reviews consolidate once, retain contributions, and expo
   await page.goto(production);
   await runApi(page);
   await expect(
-    page.getByText("Three-model review complete", { exact: true }),
+    page.getByText("First-round findings ready", { exact: true }),
   ).toBeVisible();
   await expect(page.locator(".consensus-summary")).toContainText(
-    "3 / 3 reviews completed",
+    "3 / 3 model reviews completed",
   );
   await expect(page.locator(".finding")).toHaveCount(1);
-  await expect(page.locator(".confidence-pill")).toHaveText("HIGH CONFIDENCE");
+  await expect(page.locator(".confidence-pill")).toHaveCount(0);
   await expect(
     page.getByText("Severity differs across models", { exact: true }),
   ).toBeVisible();
@@ -525,7 +534,7 @@ test("three independent reviews consolidate once, retain contributions, and expo
     );
   }
   const result = await exportedJson(page);
-  expect(result.schema_version).toBe("2.0.0");
+  expect(result.schema_version).toBe(council.schema_version);
   expect(result.static_report.candidates).toHaveLength(3);
   expect(result.static_report.execution).toBe("browser");
   expect(result.council).toEqual(council);
@@ -551,6 +560,7 @@ test("three independent reviews consolidate once, retain contributions, and expo
   expect(markdown).toContain(council.source_sha256);
   expect(markdown).not.toContain("SYNTHETIC_BROWSER_TEST");
 
+  await page.locator(".findings-options > summary").click();
   const views = page.getByRole("group", { name: "Result source" });
   await views.getByRole("button", { name: /^Static baseline/ }).click();
   await expect(page.locator(".finding")).toHaveCount(3);
@@ -559,17 +569,17 @@ test("three independent reviews consolidate once, retain contributions, and expo
     "Static",
     "Static",
   ]);
-  await expect(
-    page.getByLabel("Consensus confidence", { exact: true }),
-  ).toHaveCount(0);
-  await views.getByRole("button", { name: /^Model consensus/ }).click();
+  await expect(page.getByLabel("Model agreement", { exact: true })).toHaveCount(
+    0,
+  );
+  await views.getByRole("button", { name: /^Model findings/ }).click();
   await expect(page.locator(".finding")).toHaveCount(1);
   await expect
     .poll(() =>
       page.locator(".findings-content").evaluate((node) => node.scrollTop),
     )
     .toBe(0);
-  await views.getByRole("button", { name: /^Model consensus/ }).focus();
+  await views.getByRole("button", { name: /^Model findings/ }).focus();
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({
     path: testInfo.outputPath("api-council-review.png"),
@@ -600,24 +610,29 @@ test("partial model failure keeps two validated reviews with medium confidence a
   await page.goto(production);
   await runApi(page);
   await expect(
-    page.getByText("Partial model coverage", { exact: true }),
+    page.getByText("Results available · incomplete model coverage", {
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(page.locator(".consensus-summary")).toContainText(
-    "2 / 3 reviews completed",
+    "2 / 3 model reviews completed",
   );
   await expect(page.locator(".consensus-summary")).toContainText(
-    "Partial coverage",
+    "Partial model coverage. Available findings are retained.",
   );
   await expect(page.locator(".finding")).toHaveCount(1);
-  await expect(page.locator(".confidence-pill")).toHaveText(
-    "MEDIUM CONFIDENCE",
-  );
+  await expect(page.locator(".finding-origin")).toHaveText("2 / 3 models");
+  await expect(page.locator(".confidence-pill")).toHaveCount(0);
   const unavailable = page.locator(".council-model.failed");
   await expect(unavailable).toHaveCount(1);
-  await expect(unavailable.locator("summary")).toContainText(
+  await expect(unavailable.locator(":scope > summary")).toContainText(
     BEDROCK_MODELS[2].label,
   );
-  await unavailable.locator("summary").click();
+  await unavailable.locator(":scope > summary").click();
+  await expect(unavailable).toContainText(
+    "No valid review is available from this model.",
+  );
+  await unavailable.locator(".model-technical > summary").click();
   await expect(unavailable).toContainText(
     "This model is unavailable for the supplied account.",
   );
@@ -650,7 +665,7 @@ test("all model failures are unavailable, never presented as a clean review", as
     page.getByText("Model review failed", { exact: true }),
   ).toBeVisible();
   await expect(page.locator(".consensus-summary")).toContainText(
-    "0 / 3 reviews completed",
+    "0 / 3 model reviews completed",
   );
   await expect(page.locator(".council-model.failed")).toHaveCount(3);
   await expect(
@@ -661,7 +676,7 @@ test("all model failures are unavailable, never presented as a clean review", as
   expect(result.council.status).toBe("failed");
   expect(result.static_report.candidates).toHaveLength(3);
   await page
-    .getByRole("button", { name: "View static baseline", exact: true })
+    .getByRole("button", { name: "View Static Analysis", exact: true })
     .click();
   await expect(page.locator(".finding")).toHaveCount(3);
 });
@@ -676,7 +691,8 @@ test("confidence and severity filters operate on consolidated findings without c
   await page.goto(production);
   await runApi(page);
   await expect(page.locator(".finding")).toHaveCount(3);
-  const confidence = page.getByLabel("Consensus confidence", { exact: true });
+  await page.locator(".findings-options > summary").click();
+  const confidence = page.getByLabel("Model agreement", { exact: true });
   for (const [level, count, agreement] of [
     ["HIGH", 1, 3],
     ["MEDIUM", 1, 2],
@@ -732,7 +748,7 @@ for (const action of [
     await runApi(page);
     await entered;
     await expect(
-      page.getByRole("button", { name: "Cancel analysis" }),
+      page.getByRole("button", { name: "Cancel Review" }),
     ).toBeVisible();
     if (action === "source edit") {
       await page
@@ -746,7 +762,7 @@ for (const action of [
         .getByRole("textbox", { name: "Contract filename" })
         .fill("Changed.sol");
     } else if (action === "cancel") {
-      await page.getByRole("button", { name: "Cancel analysis" }).click();
+      await page.getByRole("button", { name: "Cancel Review" }).click();
     } else {
       await page
         .getByRole("button", { name: "Connection settings", exact: true })
@@ -764,7 +780,7 @@ for (const action of [
     await expect(page.locator(".consensus-summary")).toHaveCount(0);
     await expect(page.locator(".council-model.succeeded")).toHaveCount(0);
     await expect(
-      page.getByRole("button", { name: "Cancel analysis" }),
+      page.getByRole("button", { name: "Cancel Review" }),
     ).toHaveCount(0);
     if (action.endsWith("edit")) {
       await expect(
@@ -805,7 +821,9 @@ test("documentation opens the same-site library and setup stays on site", async 
   ).toBeVisible();
   await documentsPage.close();
   await expect(page).toHaveURL(`${production}/`);
-  await page.getByRole("button", { name: /^API analysis/ }).click();
+  await page
+    .getByRole("button", { name: "Connection settings", exact: true })
+    .click();
   await expect(page.locator(".connection-status")).toContainText("Key ready");
   await page.keyboard.press("Escape");
   const pdf = await request.get(
@@ -835,11 +853,9 @@ test("documentation opens the same-site library and setup stays on site", async 
   await expect(
     page.getByRole("heading", { name: "Connection & analysis" }),
   ).toBeVisible();
-  await page
-    .getByRole("link", { name: "Connect Bedrock", exact: true })
-    .click();
+  await page.getByRole("link", { name: "Bedrock Review", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Connect AWS Bedrock" }),
+    page.getByRole("heading", { name: "Connect and run Bedrock Review" }),
   ).toBeInViewport();
   expect(
     await page.evaluate(
@@ -872,7 +888,7 @@ test("desktop panes stay anchored; mobile source links reveal the code", async (
       ),
     ).toBe(true);
     await expect(
-      page.getByRole("button", { name: "Run static analysis", exact: true }),
+      page.getByRole("button", { name: "Run Static Analysis", exact: true }),
     ).toBeInViewport();
     await expect(
       page.getByRole("button", { name: jsonButton }),
@@ -902,17 +918,17 @@ test("desktop panes stay anchored; mobile source links reveal the code", async (
     await page.locator(".code-view").evaluate((node) => node.clientHeight),
   ).toBeGreaterThan(initialHeight + 80);
   await expect(
-    page.getByRole("button", { name: "Run static analysis", exact: true }),
+    page.getByRole("button", { name: "Run Static Analysis", exact: true }),
   ).toBeInViewport();
   await page.getByRole("button", { name: "Restore overview" }).click();
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   // Short or zoomed windows fall back to a normal scrolling page, without clipped controls.
   await page.setViewportSize({ width: 1280, height: 580 });
   await page
-    .getByRole("button", { name: "Run static analysis", exact: true })
+    .getByRole("button", { name: "Run Static Analysis", exact: true })
     .scrollIntoViewIfNeeded();
   await expect(
-    page.getByRole("button", { name: "Run static analysis", exact: true }),
+    page.getByRole("button", { name: "Run Static Analysis", exact: true }),
   ).toBeInViewport();
 });
 
@@ -927,12 +943,13 @@ test("guided prompt is explicit and changing it does not start a paid analysis",
   });
   await page.goto(production);
   await apiMode(page);
+  await page.locator(".review-advanced-options > summary").click();
   const prompt = page.getByLabel("Review prompt", { exact: true });
   await expect(prompt).toHaveValue("baseline");
   await prompt.selectOption("few-shot");
   expect(requests).toEqual([]);
   await page
-    .getByRole("button", { name: "Run API analysis", exact: true })
+    .getByRole("button", { name: "Run Bedrock Review", exact: true })
     .click();
   await expect(page.locator(".council-model.succeeded")).toHaveCount(3);
   expect(requests).toHaveLength(1);
@@ -967,6 +984,7 @@ test("five-contract validation requires an explicit run and exports traceable cr
   });
   await page.goto(production);
   await apiMode(page);
+  await page.locator(".review-advanced-options > summary").click();
   await page
     .getByRole("button", { name: "Validate 5 cases", exact: true })
     .click();
@@ -1073,6 +1091,7 @@ test("validation cancellation keeps the completed case and does not start the re
   });
   await page.goto(production);
   await apiMode(page);
+  await page.locator(".review-advanced-options > summary").click();
   await page
     .getByRole("button", { name: "Validate 5 cases", exact: true })
     .click();
@@ -1126,6 +1145,7 @@ test("retried reviews show their attempt history and retain severity disagreemen
   await expect(page.locator(".consensus-summary")).toContainText(
     "4 / 6 attempts",
   );
+  await page.locator(".findings-options > summary").click();
   const queue = page.getByRole("button", { name: /^Review queue/ });
   await expect(queue).toContainText("1");
   await queue.click();

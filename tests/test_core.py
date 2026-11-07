@@ -158,3 +158,64 @@ def test_recorded_reports_are_actual_current_outputs():
     from scripts.generate_showcase import generate
 
     generate(check=True)
+
+
+@pytest.mark.parametrize(
+    "case",
+    json.loads((ROOT / "tests/static_regressions.json").read_text()),
+    ids=lambda case: case["name"],
+)
+def test_lexical_static_regressions(case):
+    report = analyze(AuditInput(filename="Regression.sol", source=case["source"]))
+    assert [
+        [item.rule_id, item.proposed_severity, item.evidence.line_start]
+        for item in report.candidates
+    ] == case["expected"]
+    assert report.input.source == case["source"]
+    for item in report.candidates:
+        assert item.evidence.excerpt == case["source"].splitlines()[item.evidence.line_start - 1]
+
+
+def test_masking_preserves_offsets_and_line_endings():
+    from audit_core.legacy_rules import mask_non_code
+
+    source = 'a/* 中文🙂 \r\n } */b; "http://x/\\"}"; // tail\r\nc'
+    masked = mask_non_code(source)
+    assert len(masked) == len(source)
+    assert [(i, c) for i, c in enumerate(masked) if c in "\r\n"] == [
+        (i, c) for i, c in enumerate(source) if c in "\r\n"
+    ]
+    assert "}" not in masked and "tail" not in masked
+    assert masked[0] == "a" and masked[-1] == "c"
+
+
+@pytest.mark.parametrize("version", ["0.1.0", "0.1.1"])
+def test_static_report_ids_bind_to_declared_engine_version(version):
+    from audit_core.models import candidate_id
+
+    report = analyze(vault())
+    assert report.engine_version == "0.1.1"
+    data = report.model_dump()
+    data["engine_version"] = version
+    for item in data["candidates"]:
+        item["id"] = candidate_id(
+            data["source_sha256"],
+            item["rule_id"],
+            item["evidence"]["line_start"],
+            data["engine"],
+            version,
+        )
+    accepted = AuditReport.model_validate(data)
+    assert accepted.engine_version == version
+    if version == "0.1.0":
+        assert accepted.candidates[0].id != report.candidates[0].id
+    data["engine_version"] = "0.1.1" if version == "0.1.0" else "0.1.0"
+    with pytest.raises(ValidationError, match="Invalid or duplicate candidate identity"):
+        AuditReport.model_validate(data)
+
+
+def test_unknown_static_engine_version_is_rejected():
+    data = analyze(vault()).model_dump()
+    data["engine_version"] = "99.0.0"
+    with pytest.raises(ValidationError):
+        AuditReport.model_validate(data)

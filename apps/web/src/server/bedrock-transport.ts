@@ -71,6 +71,46 @@ export const defaultTiming: ReviewTiming = {
 };
 export const retryableStatuses = new Set([429, 500, 502, 503, 504]);
 
+const temporaryNetworkCodes = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+function isTemporaryNetworkFailure(error: unknown, depth = 0): boolean {
+  if (!object(error) || depth > 4) return false;
+  if (error.name === "AbortError" || error.name === "TimeoutError")
+    return false;
+  // Use only structured runtime codes. Message matching could mistake a TLS,
+  // URL, input or programming error for a temporary connection failure.
+  if (typeof error.code === "string")
+    return temporaryNetworkCodes.has(error.code);
+  if (Array.isArray(error.errors))
+    return (
+      error.errors.length > 0 &&
+      error.errors.length <= 8 &&
+      error.errors.every((entry) => isTemporaryNetworkFailure(entry, depth + 1))
+    );
+  return isTemporaryNetworkFailure(error.cause, depth + 1);
+}
+
+function transportFailure(error: unknown, signal: AbortSignal): unknown {
+  if (signal.aborted) return timeoutError();
+  if (error instanceof Error && isTemporaryNetworkFailure(error))
+    return new RequestError(
+      "A temporary network interruption prevented a completed Bedrock response. The bounded retry policy applies.",
+      502,
+      "bedrock_network",
+      true,
+    );
+  return error;
+}
+
 export function timeoutError() {
   return new RequestError(
     "Analysis timed out or was cancelled. Static results remain available.",
@@ -140,6 +180,8 @@ async function fetchBounded(
       return response;
     });
     return await Promise.race([pending, interrupted]);
+  } catch (error) {
+    throw transportFailure(error, signal);
   } finally {
     signal.removeEventListener("abort", abort);
   }
@@ -284,6 +326,110 @@ export function assertCredentialAbsent(value: string, key: string): void {
     );
 }
 
+// Diagnostic-only classification. Never return any upstream message, property
+// value, schema path or URL. These hints do not change retry or access policy.
+const knownProviderExceptions = new Set([
+  "ValidationException",
+  "ResourceNotFoundException",
+  "AccessDeniedException",
+  "ExpiredTokenException",
+  "UnrecognizedClientException",
+  "ThrottlingException",
+  "ModelNotReadyException",
+  "ModelTimeoutException",
+  "ModelErrorException",
+  "ServiceUnavailableException",
+  "InternalServerException",
+]);
+
+function knownProviderException(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 256) return null;
+  // AWS may prefix __type with a namespace, or suffix an error header with a
+  // URL. Only an exact member of our fixed allowlist may leave this function.
+  const name = value.split("#").at(-1)?.split(":")[0];
+  return name && knownProviderExceptions.has(name) ? name : null;
+}
+
+function badRequestCategory(message: string): string | null {
+  if (
+    /\b(?:output_?config|textformat|json_schema|structured outputs?|output schema|json schema)\b/i.test(
+      message,
+    )
+  )
+    return "The provider diagnostic mentions structured-output configuration. Check the schema and this model's supported output format.";
+  if (
+    /\b(?:input is too long|input length|context length|maximum context|too many input tokens|input token count)\b/i.test(
+      message,
+    )
+  )
+    return "The provider diagnostic mentions an input or context limit. Try a smaller contract or peer-review context.";
+  if (/\b(?:max_?tokens|temperature|top_?p|inferenceconfig)\b/i.test(message))
+    return "The provider diagnostic mentions an inference parameter. Check the configured output-token and generation settings for this model.";
+  if (
+    /\b(?:model identifier|modelid|inference profile|on-demand throughput)\b/i.test(
+      message,
+    )
+  )
+    return "The provider diagnostic mentions a model identifier or inference profile. Check the configured model and region.";
+  return null;
+}
+
+async function badRequestDiagnostic(
+  response: Response,
+  signal: AbortSignal,
+): Promise<string> {
+  let exception = knownProviderException(
+    response.headers.get("x-amzn-errortype"),
+  );
+  let category: string | null = null;
+  try {
+    const raw = await readBounded(
+      response.body,
+      16_384,
+      AbortSignal.any([signal, AbortSignal.timeout(1_000)]),
+    );
+    const payload: unknown = JSON.parse(raw);
+    if (object(payload)) {
+      exception ??= knownProviderException(payload.__type);
+      const message = payload.message ?? payload.Message;
+      if (typeof message === "string") category = badRequestCategory(message);
+    }
+  } catch {
+    // A malformed, oversized, interrupted or stalled diagnostic must never
+    // hide the observed HTTP failure or turn it into a retryable error.
+  } finally {
+    void response.body?.cancel().catch(() => {});
+  }
+  return [category, exception ? `AWS exception: ${exception}.` : null]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function incompleteDiagnostic(stopReason: unknown): string {
+  // Exact allowlist only: upstream reason text may contain private data. Keep
+  // these failures terminal; a stop reason is not a transient HTTP failure.
+  switch (stopReason) {
+    case "max_tokens":
+      return "AWS stop reason: max_tokens. The model reached its output token limit before completing the review.";
+    case "model_context_window_exceeded":
+      return "AWS stop reason: model_context_window_exceeded. The model exceeded its context window; review the input size and model context limits.";
+    case "guardrail_intervened":
+      return "AWS stop reason: guardrail_intervened. A Bedrock guardrail interrupted the review.";
+    case "content_filtered":
+      return "AWS stop reason: content_filtered. Bedrock reported content filtering and did not complete the review.";
+    case "malformed_model_output":
+      return "AWS stop reason: malformed_model_output. Bedrock reported malformed model output.";
+    case "malformed_tool_use":
+      return "AWS stop reason: malformed_tool_use. Bedrock reported malformed tool use; this review requires a completed JSON response.";
+    case "tool_use":
+      return "AWS stop reason: tool_use. The model requested a tool action; this review requires a completed JSON response.";
+    case "stop_sequence":
+      return "AWS stop reason: stop_sequence. The model stopped at a stop sequence without confirming a completed review.";
+    default:
+      return "Bedrock returned an unknown or missing stop reason. The cause of the incomplete review is not available.";
+  }
+}
+
 /** Fixed-origin Converse transport; callers own schema and source validation. */
 export async function invokeBedrockJson({
   model,
@@ -327,7 +473,9 @@ export async function invokeBedrockJson({
                 text: { format: { strict: true } },
               },
             }
-          : {}),
+          : model.id === "us.xai.grok-4.7"
+            ? { additionalModelRequestFields: { reasoning_effort: "medium" } }
+            : {}),
       }),
       signal,
       redirect: "error",
@@ -336,18 +484,54 @@ export async function invokeBedrockJson({
   );
 
   if (!response.ok) {
-    void response.body?.cancel().catch(() => {});
+    const providerDiagnostic =
+      response.status === 400
+        ? await badRequestDiagnostic(response, signal)
+        : "";
+    if (response.status !== 400) void response.body?.cancel().catch(() => {});
+
+    // Only the opaque AWS request identifier and fixed diagnostic labels are
+    // retained. Never expose upstream messages, URLs or credential text.
+    const rawRequestId = response.headers.get("x-amzn-requestid") ?? "";
+    const requestId =
+      /^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i.test(
+        rawRequestId,
+      )
+        ? rawRequestId
+        : null;
+    const diagnostic = (detail: string) =>
+      `${detail} HTTP ${response.status}.${requestId ? ` AWS request ID: ${requestId}.` : ""}`;
+
+    // An actual Bedrock 408 is a provider-side ModelTimeoutException. It may
+    // recover on a later attempt inside the SAME model deadline. Local deadline
+    // exhaustion and user cancellation never reach this retryable branch.
+    if (response.status === 408)
+      throw new RequestError(
+        diagnostic(
+          "Bedrock reached its model processing limit. The bounded retry policy applies while execution time remains.",
+        ),
+        504,
+        "bedrock_model_timeout",
+        true,
+        retryAfter(response),
+      );
 
     if (response.status === 401 || response.status === 403)
       throw new RequestError(
-        `Bedrock denied access. Check access to ${model.label} in ${BEDROCK.region}.`,
-        401,
+        diagnostic(
+          response.status === 401
+            ? "Bedrock rejected the credential. Replace an expired or invalid API key before trying again."
+            : `Bedrock denied permission for ${model.label}. Check the key's account permissions, model access and ${BEDROCK.region} region.`,
+        ),
+        response.status,
         "bedrock_access",
       );
 
     if (response.status === 429)
       throw new RequestError(
-        "Bedrock is rate limited. Wait before trying again.",
+        diagnostic(
+          "Bedrock is rate limited. Wait before trying again; check the account's model quota if this persists.",
+        ),
         429,
         "bedrock_rate_limit",
         true,
@@ -356,13 +540,21 @@ export async function invokeBedrockJson({
 
     if (response.status === 400 || response.status === 404)
       throw new RequestError(
-        `Bedrock could not use model ${model.id}.`,
+        diagnostic(
+          response.status === 404
+            ? `Bedrock could not find model ${model.id} in ${BEDROCK.region}. Check the configured inference profile and model availability.`
+            : `Bedrock rejected the request for ${model.id}. ${providerDiagnostic || "Check support for the configured model, region and structured output format."}`,
+        ),
         502,
         "bedrock_model",
       );
 
     throw new RequestError(
-      "Bedrock is temporarily unavailable. Try again later.",
+      diagnostic(
+        retryableStatuses.has(response.status)
+          ? "Bedrock is temporarily unavailable. The bounded retry policy applies; try a new run later if the service remains unavailable."
+          : "Bedrock could not complete this request. It was not automatically retried; check model availability and account access.",
+      ),
       502,
       "bedrock_unavailable",
       retryableStatuses.has(response.status),
@@ -370,7 +562,14 @@ export async function invokeBedrockJson({
     );
   }
 
-  const raw = await readBounded(response.body, 256_000, signal);
+  let raw: string;
+  try {
+    raw = await readBounded(response.body, 256_000, signal);
+  } catch (error) {
+    // Incoming request bodies and report validation never use this recovery
+    // classification: it applies only to reading an outbound AWS response.
+    throw transportFailure(error, signal);
+  }
 
   assertCredentialAbsent(raw, key);
 
@@ -387,9 +586,13 @@ export async function invokeBedrockJson({
 
   if (!object(payload) || payload.stopReason !== "end_turn")
     throw new RequestError(
-      `${model.label} did not complete the review. Try a smaller contract.`,
+      `${model.label} did not complete the review. ${incompleteDiagnostic(object(payload) ? payload.stopReason : undefined)} No partial result was accepted.`,
       502,
-      "incomplete",
+      object(payload) &&
+        (payload.stopReason === "content_filtered" ||
+          payload.stopReason === "guardrail_intervened")
+        ? payload.stopReason
+        : "incomplete",
     );
 
   const output = payload.output;
@@ -428,7 +631,7 @@ export async function invokeBedrockJson({
     output_tokens: tokens(usage.outputTokens),
   };
 }
-/** One deadline across all attempts; only explicit temporary HTTP failures retry. */
+/** One shared attempt/deadline budget; only endpoint-authorized failures retry. */
 export async function runBoundedModel<T extends { elapsed_ms: number }>({
   model,
   signal,
@@ -525,14 +728,21 @@ export async function runBoundedModel<T extends { elapsed_ms: number }>({
           number === REVIEW_POLICY.max_attempts_per_model
         )
           break;
-        const jitter = Math.ceil(
-          timing.retryBaseMs * (1 + Math.max(0, Math.min(1, timing.random()))),
+        const jitter = Math.min(
+          timing.retryCapMs,
+          Math.ceil(
+            timing.retryBaseMs *
+              2 ** (number - 1) *
+              (1 + Math.max(0, Math.min(1, timing.random()))),
+          ),
         );
+        // The local jitter cap is not a provider Retry-After cap. Honor the
+        // provider's minimum delay whenever it fits this model's remaining
+        // deadline; otherwise stop without sending an early retry.
         retryDelay = Math.max(jitter, failure.retryAfterMs ?? 0);
         if (
-          retryDelay > timing.retryCapMs ||
           retryDelay + timing.minimumAttemptBudgetMs >=
-            deadline - performance.now()
+          deadline - performance.now()
         )
           break;
         await pause(retryDelay, modelSignal);

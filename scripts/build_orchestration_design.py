@@ -135,163 +135,149 @@ def page_chrome(c, doc):
     c.restoreState()
 
 
-story = []
-story += [
+story = [
     para("Orchestration design", "title"),
     para(
         "Multi-Agent AI for Smart Contract Audit<br/>and Cybersecurity Risk Assessment", "subtitle"
     ),
     para(
-        "<b>Design objective.</b> Preserve independent evidence, give reviewers one controlled opportunity to reconsider disputed claims, and retain a transparent before/after record."
+        "<b>Workspace flow.</b> Run Bedrock Review, inspect Findings, then open Second Review and select Run Second Review. Final Report follows an accepted second-round result or a stated reason that no review is eligible. No second round starts automatically."
     ),
     para(
-        "GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7 run through Amazon Bedrock. A deterministic TypeScript supervisor manages execution and validates reports. It does not add a fourth adjudicating model or use managed Bedrock Agents."
+        "GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7 provide judgments through Amazon Bedrock. A deterministic supervisor schedules their work, validates evidence and consolidates outputs. It adds no fourth model."
     ),
-    para("One baseline. One optional reconsideration.", "section"),
+    para("Two iterations. Traceable assignments.", "section"),
     table(
         ["Stage", "Input and responsibility", "Retained output"],
         [
             [
                 "1. Independent review",
-                "Same numbered source and prompt variant for all three models. No static findings or peer answers.",
-                "Source-bound original findings, model outcomes and independent agreement.",
+                "Same numbered source and prompt variant. No static findings or peer answers.",
+                "Original findings, execution outcomes and independent agreement.",
             ],
             [
-                "2. Queue selection",
-                "Identify severity differences, non-reporting and unavailable coverage. Select the first 12 queued claims in stable order.",
-                "Selected IDs, original contributions and explicitly deferred claims.",
+                "2. Targeted plan",
+                "Select up to 12 queued claims. Assign peer findings a reviewer omitted; also reassess severity disputes.",
+                "Exact IDs per model, unassigned reviewers and deferred claims.",
             ],
             [
-                "3. Second review",
-                "At least two first-pass models must have succeeded. Those reviewers reconsider the same claims with peer context, including their own.",
-                "Support, rejection or uncertainty with rationale and exact source evidence.",
+                "3. Second Review",
+                "Explicit user action sends source and assignments. Empty assignments make no call; failed initial models remain unavailable.",
+                "Support, rejection or uncertainty, with rationale and exact evidence.",
             ],
             [
-                "4. Separate summary",
-                "Validate every assessment and derive a peer-informed summary. Preserve the first-pass snapshot unchanged.",
-                "Before/after decisions, missing reviewers, failures and unresolved items.",
+                "4. Final Report",
+                "Read risk explanations and actions first; expand model judgments and evidence. Preserve both original rounds.",
+                "First discoverers, later decisions, coverage and separate severity alignment.",
             ],
         ],
-        [108, 211, WIDTH - 319],
+        [106, 215, WIDTH - 321],
     ),
-    Spacer(1, 12),
-    para("Why preserve the first pass?", "section"),
+    Spacer(1, 10),
+    para("Typed decisions, not automatic truth", "section"),
     para(
-        "First-pass agreement is independent corroboration among model outputs, not a probability of correctness. Second-pass reviewers have seen peer claims, so their responses are correlated. Their decisions must not be added to the original votes or used to inflate the confidence display."
+        "The JEV reading motivates constrained decisions. A stable 12-slot grammar holds assigned judgments and null unused slots. The server validates every slot before binding original claim IDs. All models cite source spans; exact text is retrieved after validation."
     ),
     para(
-        "Scope: the second review reconsiders selected existing claims. It cannot discover a vulnerability missed by every first-pass model, recover a failed reviewer or automatically revisit unanimous unqueued findings.",
+        "Peer omissions are the primary assignment rule; severity reassessment is an extension. Failed reassessment retains a valid original opinion and severity as first-round evidence, with pending work explicit. It adds no new vote.",
         "small",
     ),
     PageBreak(),
     para("A bounded decision process", "title"),
-    para(
-        "Explicit reviewer decisions, finite requests and separate records for each pass.",
-        "subtitle",
-    ),
+    para("One final view, with original evidence and later judgments kept distinct.", "subtitle"),
     table(
-        ["Second-pass evidence", "Derived summary"],
+        ["Effective positions across three models", "Final disposition"],
         [
             [
-                "All three configured models support a claim and propose the same severity",
-                "Supported after peer review",
+                "All three support, using labeled first- or second-round evidence",
+                "Supported; severity differences and pending reassessment still require review",
             ],
-            ["All three explicitly do not support the claim", "Not supported after peer review"],
+            ["All three explicitly do not support", "Not supported"],
             [
-                "Mixed decisions, uncertainty, different severities, a missing reviewer or deferred work",
-                "Unresolved",
+                "Missing, mixed or uncertain judgments, or deferred work",
+                "Unresolved; retain for human review",
             ],
         ],
-        [WIDTH * 0.64, WIDTH * 0.36],
+        [WIDTH * 0.63, WIDTH * 0.37],
     ),
-    Spacer(1, 11),
+    Spacer(1, 9),
     para(
-        "Two agreeing reviewers with a missing third remain unresolved. A reviewer may withdraw its own original claim. Neither a supported summary nor a rejected claim is a human-validated security conclusion."
+        "Final Report retains the last valid opinion. An accepted second-round decision supersedes it; a failed reassessment preserves original evidence and remains pending. Partial execution is shown explicitly. Cancelled requests without a report do not unlock Final Report."
     ),
-    para("Execution budget", "section"),
+    para("Execution contract", "section"),
     table(
         ["Boundary", "Enforced limit"],
         [
-            ["Per model, per pass", "At most 2 attempts within one absolute 180-second deadline"],
+            ["Model / pass", "At most 3 attempts within one absolute 270-second deadline"],
             [
-                "Per server request",
-                "210 seconds inside a 240-second Vercel function; each pass is a separate request",
+                "Server request",
+                "285 seconds; 295-second browser wait; 300-second function; separate requests per pass",
             ],
             [
-                "Second review scope",
-                "One round; at most 12 queued claims; only successful first-pass reviewers",
+                "Second-round work",
+                "One round; up to 12 claims; only nonempty assignments to successful first-pass models",
             ],
-            ["Provider requests", "At most 6 per pass, or 12 for one contract with both passes"],
-            [
-                "Five-case batch",
-                "First only: at most 30 calls / 20 minutes. With second review: 60 calls / 40 minutes.",
-            ],
+            ["Provider calls", "Up to 9 per pass; 18 per contract; 90 for five paired cases"],
         ],
-        [145, WIDTH - 145],
+        [130, WIDTH - 130],
     ),
-    Spacer(1, 11),
-    para("Selective retry within the deadline", "section"),
+    Spacer(1, 9),
     para(
-        "Only explicit HTTP 429, 500, 502, 503 and 504 responses may receive one retry. Bounded backoff stays inside the original deadline. Authentication, permission, invalid evidence, malformed output, network ambiguity and local timeout failures are terminal. A retry never adds an independent vote."
+        "Each round allows three attempts per model, shared by temporary-error or remote-model-timeout recovery and local validation correction. Safe constraints request a complete new answer; rejected text is never echoed or accepted. Filtering, access, credential echo, provider JSON parsing and local cancellation stay terminal. Successful models are not rerun and no deadline resets."
     ),
     para(
-        "The key stays in tab and active request memory. Cancellation stops new work but cannot reverse AWS work already accepted. Returned usage may omit failed attempts. In-memory guards are per runtime, not a distributed account quota or guaranteed dollar cap.",
+        "Second Review uses the exact baseline; hashes are not signatures. A stable native schema avoids assignment-count changes; latency is not guaranteed. Grok uses medium effort. Keys stay in tab/request memory. Accepted AWS work may be billed; guards are not global quotas.",
         "small",
     ),
     PageBreak(),
     para("Evaluate the same evidence", "title"),
     para(
-        "Keep the five existing contracts fixed. Pair every second review with its own original first-pass report.",
+        "Keep the five original contracts fixed and pair each second round with its exact first-round baseline.",
         "subtitle",
     ),
-    para(
-        "Enable <b>Include second review</b> in five-case validation to collect both stages. Each case runs sequentially; its first-pass record is the baseline for reconsideration. Keep failures, skipped reviews and deferred claims in the export. Run Standard and Guided examples as separate explicit experiments."
-    ),
-    para("Separate operational results from quality", "section"),
     table(
-        ["Measure", "Evidence required"],
+        ["Question", "Required evidence"],
         [
             [
-                "Execution reliability",
-                "Model completion, attempts, errors, timeouts, elapsed time and available usage for each pass",
+                "Does it execute?",
+                "Completion, attempts, validation failures, latency, available usage and unstarted work.",
             ],
             [
-                "Decision changes",
-                "Same candidate ID and baseline; original support versus explicit second-pass support, rejection or uncertainty",
+                "Did opinions change?",
+                "Same claim and baseline; original discovery versus later support, rejection or uncertainty.",
             ],
             [
-                "False positives",
-                "Human judgment that a reported claim is unsupported, followed by review of how the second pass treated it",
+                "Are findings correct?",
+                "Human labels tied to source and baseline: confirmed, refuted, uncertain or unreviewed.",
             ],
             [
-                "Missed issues",
-                "An independently reviewed issue inventory, including vulnerabilities absent from every model report",
+                "What was missed?",
+                "A complete reviewed issue inventory, including issues absent from every model report.",
             ],
             [
-                "Regression risk",
-                "Supported first-pass findings incorrectly rejected or obscured after reconsideration",
+                "Did review regress?",
+                "New false positives and lost true findings alongside any gains; retain coverage gaps.",
             ],
         ],
-        [128, WIDTH - 128],
+        [130, WIDTH - 130],
     ),
-    Spacer(1, 12),
-    para("Human review protocol", "section"),
+    Spacer(1, 10),
+    para("Practical evaluation", "section"),
     para(
-        "<b>1.</b> Review each distinct root-cause/location claim before consulting the peer-informed summary. Mark it supported, unsupported or unresolved, with a reason."
-    ),
-    para(
-        "<b>2.</b> Record the second-pass judgment separately. Preserve any disagreement between reviewers; do not treat a changed model opinion as ground truth."
+        "<b>1.</b> Open Review settings for five-case validation. Select its own follow-up setting and run sequentially. Export all outcomes, including filtered, failed, skipped and deferred work."
     ),
     para(
-        "<b>3.</b> Compare paired counts and execution outcomes, retaining skipped/deferred cases. A smaller finding count or greater agreement alone does not establish higher accuracy."
+        "<b>2.</b> Review distinct root causes and locations independently of model agreement. Import source-bound adjudication data; leave uncertain or unreviewed claims explicit."
     ),
     para(
-        "The five sources are teaching fixtures with informative comments, not a held-out benchmark. Automated tests verify implementation behavior with simulated provider responses. Live availability and quality improvements require authorized runs and reviewed labels.",
+        "<b>3.</b> Compare eligible paired counts. The final view's retained opinions do not count as successful second-round judgments. Precision requires reviewed predictions; recall also requires a complete issue inventory."
+    ),
+    para(
+        "The final report supports risk triage and traceability in existing security workflows. Higher agreement alone is not improved accuracy. These five teaching fixtures are not a held-out benchmark; simulated tests establish implementation behavior, not live model quality.",
         "small",
     ),
-    Spacer(1, 8),
     para(
-        '<link href="https://dtcc-multi-agent-audit.vercel.app/">Open the platform</link>  |  <link href="https://dtcc-multi-agent-audit.vercel.app/documentation">Documentation</link>  |  <link href="https://dtcc-multi-agent-audit.vercel.app/docs/DTCC_Platform_Overview.pdf">Platform overview</link>',
+        '<link href="https://typesafe.ai/blog/introducing-system-one-models-and-jev">JEV reading</link>  |  <link href="https://dtcc-multi-agent-audit.vercel.app/documentation">Documentation</link>  |  <link href="https://dtcc-multi-agent-audit.vercel.app/docs/DTCC_Platform_Overview.pdf">Platform overview</link>',
         "small",
     ),
 ]

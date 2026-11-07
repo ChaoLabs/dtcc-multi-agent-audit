@@ -172,3 +172,69 @@ test("escaped decoded credential text is rejected after JSON parsing", async () 
     }),
   ).rejects.toThrow("could not be validated");
 });
+
+for (const status of [409, 429]) {
+  test(`HTTP ${status} admission rejection exposes a safe retry only with explicit zero-dispatch proof`, async () => {
+    let calls = 0;
+    await expect(
+      requestSecondReview({
+        ...(await input()),
+        transport: async () => {
+          calls++;
+          return Response.json(
+            {
+              code: "busy",
+              retry_safe: true,
+              provider_calls_started: 0,
+              detail: key,
+            },
+            { status },
+          );
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "busy",
+      safeToRetry: true,
+      message: expect.not.stringContaining(key),
+    });
+    expect(calls).toBe(1);
+  });
+}
+
+for (const admission of [
+  { code: "busy", retry_safe: true },
+  { code: "busy", retry_safe: true, provider_calls_started: 1 },
+  { code: "busy", retry_safe: true, provider_calls_started: "0" },
+  { code: "bedrock_rate_limit", retry_safe: true, provider_calls_started: 0 },
+  { code: "busy", retry_safe: false, provider_calls_started: 0 },
+]) {
+  test(`ambiguous admission cannot authorize a repeat: ${JSON.stringify(admission)}`, async () => {
+    await expect(
+      requestSecondReview({
+        ...(await input()),
+        transport: async () => Response.json(admission, { status: 429 }),
+      }),
+    ).rejects.toMatchObject({ safeToRetry: false });
+  });
+}
+
+test("oversized or credential-bearing admission error text is never displayed", async () => {
+  await expect(
+    requestSecondReview({
+      ...(await input()),
+      transport: async () =>
+        Response.json(
+          {
+            code: "busy",
+            retry_safe: true,
+            provider_calls_started: 0,
+            detail: key.repeat(200),
+          },
+          { status: 429 },
+        ),
+    }),
+  ).rejects.toMatchObject({
+    safeToRetry: false,
+    message: expect.not.stringContaining(key),
+  });
+});

@@ -8,6 +8,53 @@ SEVERITY_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
 
 # ----------------------------------------------------------- helpers --------
 
+def mask_non_code(source: str) -> str:
+    """Mask comments and quoted literals without changing offsets or line endings.
+
+    This lexical pass is not Solidity parsing. It only keeps comment/string text
+    out of the inherited rules and brace-based function scoping.
+    """
+    chars = list(source)
+    state, quote, i = "code", "", 0
+    while i < len(source):
+        char = source[i]
+        following = source[i + 1] if i + 1 < len(source) else ""
+        if state == "code":
+            if char == "/" and following in ("/", "*"):
+                state = "line" if following == "/" else "block"
+                chars[i] = chars[i + 1] = " "
+                i += 2
+                continue
+            if char in ("\"", "'"):
+                quote, state = char, "string"
+                chars[i] = " "
+        elif state == "line":
+            if char in "\r\n":
+                state = "code"
+            else:
+                chars[i] = " "
+        elif state == "block":
+            if char == "*" and following == "/":
+                chars[i] = chars[i + 1] = " "
+                state = "code"
+                i += 2
+                continue
+            if char not in "\r\n":
+                chars[i] = " "
+        else:
+            if char not in "\r\n":
+                chars[i] = " "
+            if char == "\\":
+                if following and following not in "\r\n":
+                    chars[i + 1] = " "
+                i += 2
+                continue
+            if char == quote:
+                state = "code"
+        i += 1
+    return "".join(chars)
+
+
 def _functions(source: str):
     """Yield (name, start_line, end_line) for each function/constructor/fallback/
     receive, using brace matching. 1-based, inclusive. Approximate but good
@@ -58,8 +105,15 @@ def scan(source: str):
     """Deterministic, function-scoped vulnerability scan. Returns a list of
     structured finding dicts (see `_finding`)."""
     findings = []
+    source = mask_non_code(source)
     lines = source.splitlines()
     funcs = _functions(source)
+    # Match value-call syntax across trivia/newlines and keep the call's source line.
+    value_calls = {}
+    for match in re.finditer(r"\.call\s*\{\s*value\s*:", source):
+        call_line = len(re.findall(r"\r\n|\r|\n", source[:match.start()])) + 1
+        statement_start = max(source.rfind(char, 0, match.start()) for char in ";{}") + 1
+        value_calls.setdefault(call_line, []).append(source[statement_start:match.start()])
     weak_randomness_reported = False
     game_parity_reported = False
 
@@ -76,16 +130,12 @@ def scan(source: str):
     # lines that write to a balances mapping (used for reentrancy ordering)
     balance_writes = [
         i for i, l in enumerate(lines, 1)
-        if re.search(r"balances\[.*\]\s*(=|-=|\+=)", l)
+        if re.search(r"balances\s*\[.*\]\s*(=|-=|\+=)", l)
     ]
 
     for i, line in enumerate(lines, 1):
-        stripped = line.strip()
-        if stripped.startswith("//") or stripped.startswith("*"):
-            continue
-
         # --- reentrancy: value call before a LATER balance write IN THE SAME FUNCTION ---
-        if re.search(r"\.call\{value:", line):
+        if i in value_calls:
             fn = next((f for f in funcs if f[1] <= i <= f[2]), None)
             same_fn_writes = [w for w in balance_writes if fn and fn[1] <= w <= fn[2]]
             if any(w > i for w in same_fn_writes):
@@ -97,7 +147,7 @@ def scan(source: str):
                     "call, or use OpenZeppelin ReentrancyGuard.",
                 ))
             # unchecked low-level call return value
-            if "=" not in line.split(".call")[0] and not re.search(r"\brequire\s*\(", line):
+            if any("=" not in prefix and not re.search(r"\brequire\s*\(", prefix) for prefix in value_calls[i]):
                 findings.append(_finding(
                     i, "MEDIUM", "SWC-104", "SC06",
                     "Unchecked low-level call",
@@ -145,7 +195,7 @@ def scan(source: str):
             ))
 
         # --- outdated / floating pragma ---
-        if re.search(r"pragma solidity\s*\^?0\.[4-7]\.", line):
+        if re.search(r"pragma\s+solidity\s*\^?0\.[4-7]\.", line):
             findings.append(_finding(
                 i, "LOW", "SWC-103", "SC03",
                 "Outdated compiler",
@@ -224,7 +274,7 @@ def scan(source: str):
             ))
 
         # public/external ether transfer with no obvious caller guard
-        if re.search(r"\.(transfer|send)\s*\(|\.call\s*\{\s*value", line):
+        if re.search(r"\.(transfer|send)\s*\(", line) or i in value_calls:
             fn = next(((n, a, b) for n, a, b in funcs if a <= i <= b), None)
             if fn:
                 name, start, end = fn
