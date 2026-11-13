@@ -1,7 +1,12 @@
 // Server-only peer review. The first-round report remains an immutable input.
 import Ajv, { type ErrorObject } from "ajv";
 import { REVIEW_POLICY } from "@/lib/review-policy";
-import { BEDROCK, BEDROCK_MODELS, validateApiKey } from "@/lib/bedrock-config";
+import {
+  BEDROCK,
+  BEDROCK_MODELS,
+  recordedCouncil,
+  validateApiKey,
+} from "@/lib/bedrock-config";
 import { validateCouncil, type CouncilReport } from "@/lib/orchestration";
 import { sourceLines, validateInput } from "@/lib/static-analysis";
 import {
@@ -313,7 +318,10 @@ export async function handleSecondReview(
     let baseline: CouncilReport;
     try {
       baseline = await validateCouncil(input.baseline, source);
-      if (baseline.schema_version !== "2.1.0")
+      if (
+        baseline.schema_version !== "2.1.0" ||
+        recordedCouncil(baseline.models) !== BEDROCK_MODELS
+      )
         throw new Error("Unsupported baseline.");
     } catch {
       throw new RequestError(
@@ -401,7 +409,7 @@ export async function handleSecondReview(
           system,
         }) => {
           let correction = "";
-          // Validation correction shares the supervisor's existing two-attempt
+          // Validation correction shares the supervisor's existing per-model
           // budget with service retries. It never grants an extra provider call.
           const invalidResponse = (
             code: "invalid_report" | "invalid_evidence",
@@ -424,7 +432,10 @@ export async function handleSecondReview(
             signal,
             overallDeadline,
             timing,
-            run: async (modelSignal): Promise<SecondReviewModelReview> => {
+            run: async (
+              modelSignal,
+              outputTokens,
+            ): Promise<SecondReviewModelReview> => {
               providerCallsStarted++;
               const response = await invokeBedrockJson({
                 model,
@@ -434,6 +445,7 @@ export async function handleSecondReview(
                 system: correction ? `${system}\n\n${correction}` : system,
                 context,
                 outputConfig,
+                outputTokens,
               });
               if (!validWire(response.content))
                 throw invalidResponse(

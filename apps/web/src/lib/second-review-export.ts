@@ -13,6 +13,8 @@ import {
 import {
   buildFinalReviewReport,
   currentModelSeverities,
+  findingHeadline,
+  oppositionNotice,
 } from "@/lib/final-report";
 import { sha256 } from "@/lib/static-analysis";
 
@@ -179,10 +181,28 @@ function consolidatedMarkdown(
     "## Findings and recommended actions",
     ...final.findings.map((finding, index) =>
       [
-        `### ${index + 1}. ${literal(finding.title)}`,
+        `### ${index + 1}. ${literal(findingHeadline(finding))}`,
+        ...(oppositionNotice(finding)
+          ? [`**Judgment:** ${oppositionNotice(finding)}`]
+          : []),
         `Proposed severity: ${finding.proposed_severity ?? "No current supported severity"}${finding.severity_disagreement ? " — disputed" : ""}\nReview required: ${finding.requires_review ? "yes" : "no additional model disagreement; human validation remains necessary"}\nLatest available support: ${finding.supporting_models.length}/3 models\nIndependent discovery: ${finding.first_round_agreement}/3 models — unchanged`,
         `**Original finding and potential impact**\n\n${literal(finding.rationale)}`,
-        `**${finding.outcome === "not_supported" || !finding.supporting_models.length ? "Original recommendation — evaluate before acting" : "Proposed recommendation"}**\n\n${literal(finding.recommendation)}`,
+        ...(finding.not_supported_models.length
+          ? [
+              "**Reasons given for non-support**",
+              ...finding.judgments
+                .filter(
+                  (item) =>
+                    item.effective_verdict === "not_supported" &&
+                    item.rationale,
+                )
+                .map(
+                  (item) =>
+                    `- **${literal(item.label)}:** ${literal(item.rationale!)}`,
+                ),
+            ]
+          : []),
+        `**${finding.not_supported_models.length || !finding.supporting_models.length ? "Original recommendation — evaluate before acting" : "Proposed recommendation"}**\n\n${literal(finding.recommendation)}`,
         `**Next review action**\n\n${finding.next_action}`,
         ...(finding.pending_reassessment_models.length
           ? [

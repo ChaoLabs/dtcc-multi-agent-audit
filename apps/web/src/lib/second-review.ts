@@ -1,14 +1,22 @@
 import type { ModelReview, ReviewFinding } from "@/generated/review";
-import { BEDROCK, BEDROCK_MODELS } from "@/lib/bedrock-config";
+import { BEDROCK } from "@/lib/bedrock-config";
 import {
   validateCouncil,
   type CouncilReport,
   type ModelAttempt,
 } from "@/lib/orchestration";
-import { REVIEW_POLICY, LEGACY_REVIEW_POLICY } from "@/lib/review-policy";
+import {
+  REVIEW_POLICY,
+  LEGACY_REVIEW_POLICY,
+  PREVIOUS_REVIEW_POLICY,
+  validRecordedDeadlines,
+  reviewDeadlines,
+} from "@/lib/review-policy";
 import { sha256, sourceLines } from "@/lib/static-analysis";
 
 export const SECOND_REVIEW_POLICY_VERSION =
+  "targeted-peer-review-v6-output-recovery" as const;
+export const PREVIOUS_SECOND_REVIEW_POLICY_VERSION =
   "targeted-peer-review-v5-extended-recovery" as const;
 export const SECOND_REVIEW_PROMPT_VERSION =
   "targeted-peer-review-v7-bounded-evidence-correction-grok-medium" as const;
@@ -76,6 +84,7 @@ export type SecondReviewReport = {
   engine: "peer-informed-reassessment";
   policy_version:
     | typeof SECOND_REVIEW_POLICY_VERSION
+    | typeof PREVIOUS_SECOND_REVIEW_POLICY_VERSION
     | "targeted-peer-review-v4-validation-correction"
     | "targeted-peer-review-v3-network-recovery"
     | "targeted-peer-review-v2"
@@ -494,12 +503,42 @@ export function bindSecondReviewContent(
 }
 export const validateSecondReviewContent = bindSecondReviewContent;
 
+type SecondPolicy = SecondReviewReport["policy_version"];
+function secondPolicy(version: SecondPolicy) {
+  const outputRecovery = version === SECOND_REVIEW_POLICY_VERSION;
+  const extendedRecovery =
+    outputRecovery || version === PREVIOUS_SECOND_REVIEW_POLICY_VERSION;
+  const validationCorrection =
+    extendedRecovery ||
+    version === "targeted-peer-review-v4-validation-correction";
+  const networkRecovery =
+    validationCorrection ||
+    version === "targeted-peer-review-v3-network-recovery";
+  const limits = outputRecovery
+    ? { ...REVIEW_POLICY, ...reviewDeadlines(false) }
+    : extendedRecovery
+      ? PREVIOUS_REVIEW_POLICY
+      : LEGACY_REVIEW_POLICY;
+  return {
+    outputRecovery,
+    extendedRecovery,
+    validationCorrection,
+    networkRecovery,
+    limits,
+  };
+}
+
 function checkAttempts(
   model: SecondReviewModelRun,
-  networkRecovery: boolean,
-  validationCorrection: boolean,
-  extendedRecovery: boolean,
+  policy: ReturnType<typeof secondPolicy>,
 ) {
+  const {
+    networkRecovery,
+    validationCorrection,
+    extendedRecovery,
+    limits,
+    outputRecovery,
+  } = policy;
   const attempts = model.attempts;
   if (!Array.isArray(attempts) || attempts.length > (extendedRecovery ? 3 : 2))
     throw new Error("Invalid second-review attempt history.");
@@ -514,6 +553,7 @@ function checkAttempts(
     return;
   }
   let elapsed = 0;
+  let retriedOutputLimit = false;
   for (const [i, attempt] of attempts.entries()) {
     if (
       !object(attempt) ||
@@ -529,10 +569,7 @@ function checkAttempts(
       !integer(
         attempt.retry_delay_ms,
         0,
-        networkRecovery
-          ? (extendedRecovery ? REVIEW_POLICY : LEGACY_REVIEW_POLICY)
-              .model_timeout_ms
-          : 5000,
+        networkRecovery ? limits.model_timeout_ms : 5000,
       ) ||
       (i === 0 && attempt.retry_delay_ms !== 0) ||
       !["succeeded", "failed"].includes(attempt.status) ||
@@ -547,6 +584,7 @@ function checkAttempts(
         ![
           "bedrock_rate_limit",
           "bedrock_unavailable",
+          ...(outputRecovery && !retriedOutputLimit ? ["output_limit"] : []),
           ...(networkRecovery ? ["bedrock_network"] : []),
           ...(extendedRecovery ? ["bedrock_model_timeout"] : []),
           ...(validationCorrection
@@ -557,6 +595,8 @@ function checkAttempts(
       throw new Error(
         "This second-review policy does not permit retrying the recorded failure.",
       );
+    if (i > 0 && attempts[i - 1].error_code === "output_limit")
+      retriedOutputLimit = true;
     elapsed += attempt.elapsed_ms + attempt.retry_delay_ms;
   }
   const last = attempts[attempts.length - 1];
@@ -574,11 +614,9 @@ function checkAttempts(
 function checkModels(
   value: unknown,
   source: string,
-  sourceHash: string,
+  baseline: CouncilReport,
   plan: SecondReviewPlan,
-  networkRecovery: boolean,
-  validationCorrection: boolean,
-  extendedRecovery: boolean,
+  policy: ReturnType<typeof secondPolicy>,
 ): SecondReviewModelRun[] {
   if (!Array.isArray(value) || value.length !== plan.model_ids.length)
     throw new Error(
@@ -604,7 +642,9 @@ function checkModels(
       !duration(entry.elapsed_ms)
     )
       throw new Error("Invalid second-review model identity.");
-    const config = BEDROCK_MODELS.find((model) => model.id === entry.model_id)!;
+    const config = baseline.models.find(
+      (model) => model.model_id === entry.model_id,
+    )!;
     if (entry.label !== config.label)
       throw new Error("Invalid second-review model label.");
     seen.add(entry.model_id);
@@ -627,10 +667,10 @@ function checkModels(
           "output_tokens",
         ]) ||
         review.provider !== "aws-bedrock" ||
-        review.model_id !== config.id ||
+        review.model_id !== config.model_id ||
         review.region !== BEDROCK.region ||
         review.protocol !== BEDROCK.protocol ||
-        review.source_sha256 !== sourceHash ||
+        review.source_sha256 !== baseline.source_sha256 ||
         !timestamp(review.created_at) ||
         !duration(review.elapsed_ms) ||
         review.elapsed_ms > entry.elapsed_ms ||
@@ -657,12 +697,7 @@ function checkModels(
       )
         throw new Error("Invalid failed second-review outcome.");
     } else throw new Error("Invalid second-review model status.");
-    checkAttempts(
-      entry as SecondReviewModelRun,
-      networkRecovery,
-      validationCorrection,
-      extendedRecovery,
-    );
+    checkAttempts(entry as SecondReviewModelRun, policy);
     models.push(entry as SecondReviewModelRun);
   }
   return plan.model_ids.map((id) =>
@@ -674,7 +709,8 @@ const severityRank = { HIGH: 3, MEDIUM: 2, LOW: 1 } as const;
 function summaries(
   plan: SecondReviewPlan,
   models: SecondReviewModelRun[],
-  baseline?: CouncilReport,
+  baseline: CouncilReport,
+  targeted = true,
 ): SecondReviewSummary[] {
   return [...plan.candidate_ids, ...plan.deferred_ids].map((finding_id) => {
     const entries = models.flatMap((model) => {
@@ -685,7 +721,7 @@ function summaries(
     });
     // Existing authors retain an explicitly first-round opinion when no task was assigned.
     // This is carried support, never a fabricated second-round confirmation.
-    if (baseline && !plan.deferred_ids.includes(finding_id)) {
+    if (targeted && !plan.deferred_ids.includes(finding_id)) {
       const original = baseline.findings.find(
         (finding) => finding.id === finding_id,
       )!;
@@ -716,9 +752,11 @@ function summaries(
     const supporting = ids("supported");
     const rejected = ids("not_supported");
     const uncertain = ids("uncertain");
-    const missing = BEDROCK_MODELS.filter(
-      (model) => !entries.some((entry) => entry.model_id === model.id),
-    ).map((model) => model.id);
+    const missing = baseline.models
+      .filter(
+        (model) => !entries.some((entry) => entry.model_id === model.model_id),
+      )
+      .map((model) => model.model_id);
     const severities = entries.flatMap((entry) =>
       entry.assessment.proposed_severity
         ? [entry.assessment.proposed_severity]
@@ -730,12 +768,12 @@ function summaries(
       !deferred &&
       !missing.length &&
       !uncertain.length &&
-      supporting.length === BEDROCK_MODELS.length &&
-      (baseline !== undefined || !severityDisagreement)
+      supporting.length === baseline.models.length &&
+      (targeted || !severityDisagreement)
         ? ("supported" as const)
         : !deferred &&
             !missing.length &&
-            rejected.length === BEDROCK_MODELS.length
+            rejected.length === baseline.models.length
           ? ("not_supported" as const)
           : ("unresolved" as const);
     return {
@@ -762,10 +800,10 @@ function checkExecution(
   value: unknown,
   models: SecondReviewModelRun[],
   elapsedMs: number,
-  networkRecovery: boolean,
-  extendedRecovery: boolean,
+  policy: ReturnType<typeof secondPolicy>,
+  importing = false,
 ): SecondReviewExecution {
-  const limits = extendedRecovery ? REVIEW_POLICY : LEGACY_REVIEW_POLICY;
+  const { limits, extendedRecovery, networkRecovery, outputRecovery } = policy;
   if (
     !object(value) ||
     !keys(value, [
@@ -783,6 +821,12 @@ function checkExecution(
     models.some((model) => model.elapsed_ms > elapsedMs)
   )
     throw new Error("Invalid second-review execution accounting.");
+  if (
+    importing &&
+    outputRecovery &&
+    !validRecordedDeadlines(value.model_timeout_ms, value.overall_timeout_ms)
+  )
+    throw new Error("Invalid model and round execution deadline combination.");
   if (networkRecovery) {
     const deadline = Math.min(
       value.model_timeout_ms as number,
@@ -838,15 +882,8 @@ export async function buildSecondReviewReport(
   if (!duration(elapsedMs)) throw new Error("Invalid second-review duration.");
   const original = await checkedBaseline(baseline, source);
   const plan = buildSecondReviewPlan(original);
-  const checked = checkModels(
-    models,
-    source,
-    original.source_sha256,
-    plan,
-    true,
-    true,
-    true,
-  );
+  const policy = secondPolicy(SECOND_REVIEW_POLICY_VERSION);
+  const checked = checkModels(models, source, original, plan, policy);
   const limits = checkExecution(
     execution ?? {
       max_attempts_per_model: SECOND_REVIEW_POLICY.max_attempts_per_model,
@@ -859,8 +896,7 @@ export async function buildSecondReviewReport(
     },
     checked,
     elapsedMs,
-    true,
-    true,
+    policy,
   );
   return {
     schema_version: "1.1.0",
@@ -909,6 +945,7 @@ export async function validateSecondReviewReport(
     (value.schema_version === "1.1.0"
       ? !(
           ((value.policy_version === SECOND_REVIEW_POLICY_VERSION ||
+            value.policy_version === PREVIOUS_SECOND_REVIEW_POLICY_VERSION ||
             value.policy_version ===
               "targeted-peer-review-v4-validation-correction") &&
             value.prompt_version === SECOND_REVIEW_PROMPT_VERSION) ||
@@ -948,39 +985,15 @@ export async function validateSecondReviewReport(
     throw new Error(
       "Second-review plan does not match the original review queue.",
     );
-  const models = checkModels(
-    value.models,
-    source,
-    original.source_sha256,
-    plan,
-    value.policy_version === SECOND_REVIEW_POLICY_VERSION ||
-      value.policy_version ===
-        "targeted-peer-review-v4-validation-correction" ||
-      value.policy_version === "targeted-peer-review-v3-network-recovery",
-    value.policy_version === SECOND_REVIEW_POLICY_VERSION ||
-      value.policy_version === "targeted-peer-review-v4-validation-correction",
-    value.policy_version === SECOND_REVIEW_POLICY_VERSION,
-  );
-  checkExecution(
-    value.execution,
-    models,
-    value.elapsed_ms,
-    value.policy_version === SECOND_REVIEW_POLICY_VERSION ||
-      value.policy_version ===
-        "targeted-peer-review-v4-validation-correction" ||
-      value.policy_version === "targeted-peer-review-v3-network-recovery",
-    value.policy_version === SECOND_REVIEW_POLICY_VERSION,
-  );
+  const policy = secondPolicy(value.policy_version as SecondPolicy);
+  const models = checkModels(value.models, source, original, plan, policy);
+  checkExecution(value.execution, models, value.elapsed_ms, policy, true);
   if (
     !same(value.models, models) ||
     value.status !== status(plan, models) ||
     !same(
       value.findings,
-      summaries(
-        plan,
-        models,
-        value.schema_version === "1.1.0" ? original : undefined,
-      ),
+      summaries(plan, models, original, value.schema_version === "1.1.0"),
     )
   )
     throw new Error(

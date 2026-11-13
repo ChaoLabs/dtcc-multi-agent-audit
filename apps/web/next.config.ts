@@ -2,6 +2,10 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  env: {
+    NEXT_PUBLIC_REVIEW_HOST:
+      process.env.VERCEL === "1" ? "vercel" : "self-hosted",
+  },
   async headers() {
     return [
       {

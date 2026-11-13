@@ -82,6 +82,7 @@ async function runModelReview(
   transport: typeof fetch,
   promptVariant: PromptVariant,
   correction: string,
+  outputTokens: number,
   invalidResponse: (
     code: "invalid_report" | "invalid_evidence",
     detail: string,
@@ -100,6 +101,7 @@ async function runModelReview(
       })),
     },
     outputConfig: bedrockOutputConfig,
+    outputTokens,
   });
   const content: unknown = response.content;
   if (!validContent(content))
@@ -273,7 +275,7 @@ export async function handleReview(
           signal,
           overallDeadline,
           timing,
-          run: (modelSignal) =>
+          run: (modelSignal, outputTokens) =>
             runModelReview(
               model,
               key,
@@ -283,6 +285,7 @@ export async function handleReview(
               transport,
               promptVariant,
               correction,
+              outputTokens,
               invalidResponse,
             ),
         });

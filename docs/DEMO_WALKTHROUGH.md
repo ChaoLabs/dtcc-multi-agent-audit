@@ -1,6 +1,6 @@
 # Platform and code walkthrough
 
-Use one existing reference contract for the walkthrough. Keep the five original sources unchanged for evaluation. If presenting a saved or simulated result, identify it explicitly.
+For the supplied DAO contract, open **Reference cases → DAO Treasury**. Select **Run Bedrock Review** only after confirming AWS permissions and source-sharing approval. If no issues are reported, show the coverage and empty Final Report: there are no disagreements to send to a second round, and no claim of safety. To illustrate a disagreement instead, choose a teaching fixture. Keep the five original sources unchanged for evaluation. If presenting a saved or simulated result, identify it explicitly.
 
 | Show | Explain | Code to open |
 | --- | --- | --- |

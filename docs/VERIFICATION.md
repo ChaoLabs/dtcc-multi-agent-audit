@@ -1,5 +1,7 @@
 # Verification records
 
+These are release-specific verification records; counts, model names and limits refer to the release being described. For current limits see [Bedrock Review](BEDROCK.md#models-and-routing).
+
 ## Final report ordering and severity details
 
 The final report sorts its derived findings by the latest proposed severity (high,

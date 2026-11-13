@@ -26,9 +26,10 @@ function fenced(value: string, language = "") {
 export function markdownReport(
   report: AuditReport,
   review?: ModelReview | null,
+  scope: "standalone" | "static-appendix" = "standalone",
 ): string {
   return [
-    "# DTCC — Smart Contract Analysis",
+    ...(scope === "standalone" ? ["# DTCC — Smart Contract Analysis"] : []),
     "Findings are candidates for review, not confirmed vulnerabilities.",
     `Run: ${report.run_id}\nCreated: ${report.created_at}\nExecution: ${report.execution}\nEngine: ${report.engine}@${report.engine_version}\nSchema: ${report.schema_version}\nSource SHA-256: ${report.source_sha256}`,
     `## Source: ${report.input.filename}\n\n${fenced(report.input.source, "solidity")}`,
@@ -44,8 +45,14 @@ export function markdownReport(
           ].join("\n\n"),
         )
       : ["No candidates flagged. This does not mean the contract is safe."]),
-    "## Execution stages",
-    ...report.stages.map((stage) => `- ${stage.name}: ${stage.status}`),
+    scope === "static-appendix"
+      ? "## Static pass execution"
+      : "## Execution stages",
+    ...report.stages
+      .filter(
+        (stage) => scope === "standalone" || stage.status !== "not-implemented",
+      )
+      .map((stage) => `- ${stage.name}: ${stage.status}`),
     ...(review
       ? [
           "## Bedrock review",
@@ -65,7 +72,11 @@ export function markdownReport(
         ]
       : []),
     "## Static-stage limitations",
-    ...report.limitations.map((limitation) => `- ${limitation}`),
+    ...report.limitations.map((limitation) =>
+      scope === "static-appendix" && limitation.startsWith("No Bedrock model")
+        ? `- In the static pass only: n${limitation.slice(1)}`
+        : `- ${limitation}`,
+    ),
   ].join("\n\n");
 }
 

@@ -1,8 +1,10 @@
 import type { ModelReview, ReviewFinding } from "@/generated/review";
-import { BEDROCK, BEDROCK_MODELS } from "@/lib/bedrock-config";
+import { BEDROCK, BEDROCK_MODELS, recordedCouncil } from "@/lib/bedrock-config";
 import { validateModelReview } from "@/lib/report";
 import {
   POLICY_VERSION,
+  PREVIOUS_POLICY_VERSION,
+  validRecordedDeadlines,
   PROMPT_VERSION,
   reviewPolicyLimits,
   type ReviewPolicyVersion,
@@ -11,7 +13,8 @@ import {
 } from "@/lib/review-policy";
 import { sha256, sourceLines } from "@/lib/static-analysis";
 
-export const AGGREGATION_VERSION = "source-locus-v2" as const;
+export const AGGREGATION_VERSION = "source-locus-v3" as const;
+type AggregationVersion = typeof AGGREGATION_VERSION | "source-locus-v2";
 
 /** Shared vocabulary for independent model prompts and deterministic aggregation. */
 export const CATEGORIES = [
@@ -87,7 +90,7 @@ export type ReviewQueueItem = {
 
 type CouncilBase = {
   /** Absent in pre-v2 records, which retain the original arithmetic grouping. */
-  aggregation_version?: typeof AGGREGATION_VERSION;
+  aggregation_version?: AggregationVersion;
   engine: "evidence-consensus";
   source_sha256: string;
   created_at: string;
@@ -242,18 +245,67 @@ const anchorPatterns: Record<string, RegExp> = {
   "signature-replay": /\b(?:ecrecover|recover)\s*\(/g,
 };
 
+/** Classify the reported mechanism, not the outcome or a suggested fix.
+ * A match still requires exactly one executable call in the model's own citation.
+ * Raw wording and the independent model index remain attached to every member.
+ */
+function paymentMechanism(
+  category: string,
+  finding: ReviewFinding,
+): { name: string; pattern: RegExp } | undefined {
+  const title = finding.title.toLowerCase();
+  if (!/\b(?:native|ether|eth)\b/.test(title)) return;
+  if (
+    category === "denial-of-service" &&
+    /\b(?:transfers?|payments?|payouts?)\b/.test(title) &&
+    /\b(?:fail\w*|revert\w*|stipend|gas)\b/.test(title) &&
+    /\b(?:2,?300\s+gas|gas\s+stipend)\b|\bstipend\s*\(?(?:of\s+)?2,?300\b/i.test(
+      title + " " + finding.rationale,
+    )
+  )
+    return {
+      name: "fixed-stipend",
+      pattern: /\.\s*(?:send|transfer)\s*\(\s*[\w$.]+\s*\)/g,
+    };
+  if (
+    category === "other" &&
+    /\b(?:value|amount|payment|coin|ether|eth)\b/.test(title) &&
+    /\b(?:call|function)\b/.test(title) &&
+    /\b(?:not\s+(?:attach(?:ed)?|forward(?:ed)?)|without\s+(?:native\s+)?value)\b/.test(
+      title,
+    )
+  )
+    return {
+      name: "call-without-payment",
+      // Neither an explicit {value: ...} call nor functionCallWithValue matches.
+      pattern: /\.\s*(?:functionCall|call)\s*\(/g,
+    };
+}
+
 function groupingKey(
   finding: ReviewFinding,
   code: string,
   offsets: number[],
   scopes: Scope[],
-  legacyArithmetic = false,
+  version: AggregationVersion | "unmarked",
 ): { category: string; locus: string } {
   const category = categoryOf(finding);
   const start = offsets[finding.evidence.line_start - 1];
   const end = offsets[finding.evidence.line_end] ?? code.length;
+  const mechanism =
+    version === AGGREGATION_VERSION
+      ? paymentMechanism(category, finding)
+      : undefined;
+  if (mechanism) {
+    const anchors = [...code.slice(start, end).matchAll(mechanism.pattern)];
+    if (anchors.length === 1)
+      return {
+        category,
+        locus: `payment:${mechanism.name}:${start + anchors[0].index}`,
+      };
+  }
   const pattern =
-    legacyArithmetic && category === "arithmetic"
+    version === "unmarked" && category === "arithmetic"
       ? /\+\+|--|[+*/%]=?|-(?!=)|\bunchecked\b/g
       : Object.hasOwn(anchorPatterns, category)
         ? anchorPatterns[category]
@@ -327,7 +379,10 @@ function errorCode(value: unknown): value is string {
   return typeof value === "string" && /^[a-z][a-z0-9_]{0,79}$/.test(value);
 }
 
-function validateExecution(value: unknown): ExecutionProvenance {
+function validateExecution(
+  value: unknown,
+  importing = false,
+): ExecutionProvenance {
   if (
     !record(value) ||
     !exactKeys(value, [
@@ -340,7 +395,8 @@ function validateExecution(value: unknown): ExecutionProvenance {
       "total_attempts",
     ]) ||
     !(
-      (value.policy_version === POLICY_VERSION &&
+      ((value.policy_version === POLICY_VERSION ||
+        value.policy_version === PREVIOUS_POLICY_VERSION) &&
         value.prompt_version === PROMPT_VERSION) ||
       (value.policy_version === "bounded-review-v2-network-recovery" &&
         [
@@ -370,11 +426,19 @@ function validateExecution(value: unknown): ExecutionProvenance {
     (value.total_attempts as number) > limits.max_provider_requests
   )
     throw new Error("Invalid bounded orchestration policy.");
+  if (
+    importing &&
+    value.policy_version === POLICY_VERSION &&
+    !validRecordedDeadlines(value.model_timeout_ms, value.overall_timeout_ms)
+  )
+    throw new Error("Invalid model and round execution deadline combination.");
   return value as ExecutionProvenance;
 }
 
 function validateAttempts(entry: ModelRun, policy: ExecutionProvenance) {
-  const validationRecovery = policy.policy_version === POLICY_VERSION;
+  const outputRecovery = policy.policy_version === POLICY_VERSION;
+  const validationRecovery =
+    outputRecovery || policy.policy_version === PREVIOUS_POLICY_VERSION;
   const networkRecovery = policy.policy_version !== "bounded-review-v1";
   const maximumDelay = networkRecovery
     ? Math.min(policy.model_timeout_ms, policy.overall_timeout_ms)
@@ -405,6 +469,7 @@ function validateAttempts(entry: ModelRun, policy: ExecutionProvenance) {
     return;
   }
   let measured = 0;
+  let retriedOutputLimit = false;
   for (const [index, attempt] of attempts.entries()) {
     if (
       !record(attempt) ||
@@ -433,6 +498,7 @@ function validateAttempts(entry: ModelRun, policy: ExecutionProvenance) {
       index > 0 &&
       (attempts[index - 1].status !== "failed" ||
         ![
+          ...(outputRecovery && !retriedOutputLimit ? ["output_limit"] : []),
           "bedrock_rate_limit",
           "bedrock_unavailable",
           ...(networkRecovery ? ["bedrock_network"] : []),
@@ -442,6 +508,8 @@ function validateAttempts(entry: ModelRun, policy: ExecutionProvenance) {
         ].includes(attempts[index - 1].error_code ?? ""))
     )
       throw new Error("A non-transient failure cannot be retried.");
+    if (index > 0 && attempts[index - 1].error_code === "output_limit")
+      retriedOutputLimit = true;
     measured += attempt.elapsed_ms + attempt.retry_delay_ms;
   }
   const last = attempts[attempts.length - 1];
@@ -460,9 +528,20 @@ async function validateModels(
   value: unknown,
   source: string,
   policy?: ExecutionProvenance,
+  allowHistorical = false,
 ): Promise<ModelRun[]> {
   if (!Array.isArray(value) || value.length !== BEDROCK_MODELS.length)
     throw new Error("Every configured model must have an explicit outcome.");
+  const roster = allowHistorical
+    ? recordedCouncil(
+        value.map((item) => ({
+          model_id:
+            record(item) && typeof item.model_id === "string"
+              ? item.model_id
+              : "",
+        })),
+      )
+    : BEDROCK_MODELS;
   const seen = new Set<string>();
   const models: ModelRun[] = [];
   for (const entry of value) {
@@ -479,7 +558,7 @@ async function validateModels(
       ])
     )
       throw new Error("Invalid model outcome.");
-    const config = BEDROCK_MODELS.find((model) => model.id === entry.model_id);
+    const config = roster.find((model) => model.id === entry.model_id);
     if (
       !config ||
       entry.label !== config.label ||
@@ -528,7 +607,7 @@ async function validateModels(
     if (policy) validateAttempts(entry as ModelRun, policy);
     models.push(entry as ModelRun);
   }
-  return BEDROCK_MODELS.map((config) =>
+  return roster.map((config) =>
     models.find((model) => model.model_id === config.id)!,
   );
 }
@@ -537,7 +616,7 @@ async function aggregate(
   models: ModelRun[],
   source: string,
   hash: string,
-  legacyArithmetic = false,
+  version: AggregationVersion | "unmarked" = AGGREGATION_VERSION,
 ): Promise<ConsensusFinding[]> {
   const normalized = sourceLines(source).join("\n");
   const code = executableSource(normalized);
@@ -564,7 +643,7 @@ async function aggregate(
         code,
         offsets,
         scopes,
-        legacyArithmetic,
+        version,
       );
       const key = `${category}|${locus}`;
       const group = groups.get(key) ?? { category, entries: [] };
@@ -748,7 +827,8 @@ export async function validateCouncil(
     (!withExecution && value.schema_version !== "2.0.0") ||
     value.engine !== "evidence-consensus" ||
     (Object.hasOwn(value, "aggregation_version") &&
-      value.aggregation_version !== AGGREGATION_VERSION) ||
+      value.aggregation_version !== AGGREGATION_VERSION &&
+      value.aggregation_version !== "source-locus-v2") ||
     !timestamp(value.created_at) ||
     !duration(value.elapsed_ms)
   )
@@ -756,14 +836,20 @@ export async function validateCouncil(
   const hash = await sha256(source);
   if (value.source_sha256 !== hash)
     throw new Error("Orchestration report does not match this source.");
-  const policy = withExecution ? validateExecution(value.execution) : undefined;
-  const models = await validateModels(value.models, source, policy);
+  const policy = withExecution
+    ? validateExecution(value.execution, true)
+    : undefined;
+  const models = await validateModels(value.models, source, policy, true);
   if (policy) validateAccounting(policy, models, value.elapsed_ms);
   const findings = await aggregate(
     models,
     source,
     hash,
-    !Object.hasOwn(value, "aggregation_version"),
+    value.aggregation_version === AGGREGATION_VERSION
+      ? AGGREGATION_VERSION
+      : value.aggregation_version === "source-locus-v2"
+        ? "source-locus-v2"
+        : "unmarked",
   );
   if (
     value.status !== outcome(models) ||

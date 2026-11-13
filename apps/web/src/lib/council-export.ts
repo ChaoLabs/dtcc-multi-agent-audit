@@ -1,4 +1,4 @@
-import { POLICY_VERSION } from "@/lib/review-policy";
+import { POLICY_VERSION, PREVIOUS_POLICY_VERSION } from "@/lib/review-policy";
 import type { AuditReport } from "@/generated/report";
 import {
   buildReviewQueue,
@@ -34,8 +34,10 @@ export function councilMarkdown(report: AuditReport, council: CouncilReport) {
           "## Execution controls",
           `Controller: ${council.execution.policy_version} (deterministic application code)\nPrompt: ${council.execution.prompt_version} / ${council.execution.prompt_variant}\nRequests made: ${council.execution.total_attempts} / ${council.execution.max_attempts_per_model * council.models.length} maximum\nAttempts per model: at most ${council.execution.max_attempts_per_model}\nModel deadline: ${council.execution.model_timeout_ms} ms, shared across attempts\nOverall deadline: ${council.execution.overall_timeout_ms} ms`,
           council.execution.policy_version === POLICY_VERSION
-            ? "Up to three attempts per model share one deadline. Selected temporary service, connection and remote model-timeout errors may retry; local format or evidence failures may receive constraint-only correction. Every replacement is validated in full. Access errors, filtering, credential echoes and local cancellation are terminal. Completed models are retained; agreement is not proof of correctness."
-            : "One retry is permitted only for selected transient service or connection failures under the recorded policy. Validation failures and access errors are not retried. The controller retains validated responses and routes disagreement for review; it does not add a fourth LLM or convert agreement into proof of correctness.",
+            ? "Up to three attempts per model share one deadline. A provider output-limit stop can trigger one larger-budget attempt. Other retries are limited to recoverable service, transport, format or evidence errors. Incomplete output is never accepted. Completed models are retained."
+            : council.execution.policy_version === PREVIOUS_POLICY_VERSION
+              ? "Up to three attempts per model share one deadline. Selected temporary service, connection and remote model-timeout errors may retry; local format or evidence failures may receive constraint-only correction. Every replacement is validated in full. Access errors, filtering, credential echoes and local cancellation are terminal. Completed models are retained; agreement is not proof of correctness."
+              : "One retry is permitted only for selected transient service or connection failures under the recorded policy. Validation failures and access errors are not retried. The controller retains validated responses and routes disagreement for review; it does not add a fourth LLM or convert agreement into proof of correctness.",
         ]
       : []),
     "## Model coverage",
@@ -101,7 +103,7 @@ export function councilMarkdown(report: AuditReport, council: CouncilReport) {
         ]),
     "## Independent static baseline",
     "This appendix records only the separate on-device static analysis. Its execution-stage statuses and limitations do not describe the Bedrock reviews above.",
-    markdownReport(report),
+    markdownReport(report, null, "static-appendix"),
   ].join("\n\n");
 }
 export function downloadCouncilReport(

@@ -14,12 +14,16 @@ The immediate evaluation keeps the existing five Solidity sources unchanged. Its
 
 `evaluations/cases.json` lists expected static-rule presence for historical regression. The five sources emit ten static candidates while nine reference expectations are covered. Neither 9/9 expectation coverage nor ten emitted findings is a precision/recall estimate. The API evaluation does not send these expectations or static outputs to models.
 
+## Supplemental DAO Treasury
+
+Open **Reference cases → DAO Treasury** to run the separately supplied [Treasury source](../contracts/fixtures/supplemental/muxiang_dao_treasury.sol). Static Analysis or a live Bedrock Review can return zero findings; there is no expected finding count or ground-truth label. A failed or unavailable model is recorded as incomplete, not as a clean assessment. Only submitted source is reviewed; OpenZeppelin imports are not resolved. This case does not change the five fixed cases or their metrics.
+
 ## Run from the website
 
 1. Add a current authorized Bedrock key and verify a single short-contract analysis first.
 2. Open **Review settings** and select **Standard** or **Guided examples**. Keep that selection fixed for the suite.
 3. Open **Validate 5 cases** under **Review settings**. This is a separate explicit batch, independent of the workspace's manually initiated second round. Leave **Include second review** off for first-pass-only evaluation, or enable it to pair each first-pass result with a bounded reconsideration. The five contracts run sequentially. First-pass-only mode allows at most 45 provider requests; paired mode allows at most 90, including retries.
-4. Select **Run five-case validation**. The browser has a 25-minute 5-second ceiling for first-pass-only mode and 49 minutes 40 seconds when second review is enabled. Each pass has a 295-second browser wait ceiling outside the server's stricter 285-second request deadline. Inspect case completion and model outcomes; cancel when needed. Cancellation stops subsequent cases and retains already completed records. An authentication, permission or rate-limit failure can stop the suite early to avoid repeatedly submitting more contracts under the same failure condition.
+4. Select **Run five-case validation**. Five cases allow up to five passes, or ten with paired Second Review. The session ceiling is those pass counts times the applicable browser deadline (745 seconds locally, 295 seconds on Vercel), plus 30 seconds. These are maximum waits, not expected runtimes. Inspect case completion and model outcomes; cancel when needed. Cancellation stops subsequent cases and retains already completed records. An authentication, permission or rate-limit failure can stop the suite early to avoid repeatedly submitting more contracts under the same failure condition.
 5. Select **Download validation JSON**. It retains case/source identities, run settings, accepted model reports, failures and operational metrics. Paired mode also retains the exact first-pass baseline, second-pass outcomes and before/after summaries, including skipped or deferred work. It contains no API key.
 6. Start the other prompt variant separately only when ready to incur another bounded set of calls. Comparing both prompt variants can issue at most 90 provider requests in first-pass-only mode, or 180 with second review enabled for both. These are separate explicit batches.
 

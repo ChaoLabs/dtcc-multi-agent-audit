@@ -17,13 +17,14 @@ peer-informed second review, explicit failure explanations, controlled five-case
 connection. Clickable links lead to the platform, documentation page and
 companion orchestration design brief. The design brief links back to the platform
 overview and documentation page.
+The overview also identifies **DAO Treasury** as a separately selectable case and explains the current model and request limits.
 Muxiang's two-iteration slides inform targeted assignments. The JEV reading informs typed decisions, without adding another provider or claiming calibrated judgments. The [requirements map](MUXIANG_REQUIREMENTS.md) records these choices. The supplied summer presentation informs context; implemented behavior determines
 capability claims. The supplied consulting case informs the typographic hierarchy,
 alignment and tables only. It contains no timeline, development-status filler
 or unverified performance figures.
 
 The API workflow uses one visitor-provided Bedrock key for independent parallel
-reviews by GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7. In the first pass, each
+reviews by GPT-6 Astra, Claude Opus 5.5 and Grok 4.7. In the first pass, each
 model receives the
 same numbered source and formatting instructions; it does not receive static
 findings or another model's answer. The second review deliberately shares selected
@@ -37,7 +38,7 @@ models as low, medium or high, separately from severity. The historical JSON fie
 probability or evidence of benchmarked accuracy. The highest proposed severity
 is retained within a group, while severity disagreements, original
 contributions and partial failures remain visible for review. A bounded supervisor
-allows at most three total attempts per model within a 270-second model deadline and 285-second round deadline. The browser waits up to 295 seconds inside a 300-second function allowance. Service/connection errors, Bedrock HTTP 408 model timeouts and local format/evidence correction in either round share this budget. No deadline resets and successful reviews are not rerun. A corrected complete answer must pass every check; rejected text is never echoed and evidence is never altered. Second-round responses keep twelve stable named slots, with assigned judgments and null unused slots validated before binding to trusted claims. Grok retains medium reasoning effort. Current policies record the larger budgets, and historical records retain their original provenance. No accuracy or uninterrupted availability is claimed. Standard and guided prompt variants are recorded with the
+allows at most three attempts per model. Local runs have 660-second model and 720-second round budgets; the hosted function stays within 300 seconds. An explicit output-token stop can use a remaining attempt at a larger allowance (65,536 rather than 32,768). Service/connection errors, Bedrock HTTP 408 model timeouts and local format/evidence correction in either round share this budget. No deadline resets and successful reviews are not rerun. A corrected complete answer must pass every check; rejected text is never echoed and evidence is never altered. Second-round responses keep twelve stable named slots, with assigned judgments and null unused slots validated before binding to trusted claims. Grok retains medium reasoning effort. Current policies record the larger budgets, and historical records retain their original provenance. No accuracy or uninterrupted availability is claimed. Standard and guided prompt variants are recorded with the
 results; five-case validation runs sequentially and exports operational outcomes.
 The examples are separate from the reference cases and do not establish a
 measured quality improvement. Second-pass decisions are peer-informed and never

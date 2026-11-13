@@ -4,7 +4,7 @@ import {
   firstReviewEvidenceMethod,
   firstReviewReasoningEffort,
 } from "@/lib/orchestration";
-import { BEDROCK_MODELS } from "@/lib/bedrock-config";
+import { BEDROCK_MODELS, recordedCouncil } from "@/lib/bedrock-config";
 import { REVIEW_POLICY, type PromptVariant } from "@/lib/review-policy";
 import { explainReviewFailure } from "@/lib/review-failure";
 import { Icon } from "./icons";
@@ -13,6 +13,7 @@ type Evidence = ConsensusFinding["evidence"];
 
 export function CouncilStatus({
   report,
+  missingReport = false,
   busy,
   hasKey,
   onConnect,
@@ -23,6 +24,7 @@ export function CouncilStatus({
   blocked = false,
 }: {
   report: CouncilReport | null;
+  missingReport?: boolean;
   busy: boolean;
   hasKey: boolean;
   onConnect: () => void;
@@ -84,11 +86,12 @@ export function CouncilStatus({
               Execution limits <Icon name="chevron" size={12} />
             </summary>
             <div>
-              <strong>Bounded orchestration</strong>
+              <strong>Limits for a new Bedrock Review</strong>
               <p>
                 Up to {REVIEW_POLICY.max_attempts_per_model} attempts per model,
-                shared by temporary-error recovery and format or evidence
-                correction. Successful reviews are not repeated.
+                including recovery from temporary errors, truncated replies and
+                invalid evidence or formatting. Successful reviews are not
+                repeated.
               </p>
               <dl>
                 <div>
@@ -110,7 +113,14 @@ export function CouncilStatus({
                 </div>
                 <div>
                   <dt>Output budget</dt>
-                  <dd>8,192 tokens per attempt</dd>
+                  <dd>
+                    {REVIEW_POLICY.initial_output_tokens.toLocaleString(
+                      "en-US",
+                    )}{" "}
+                    tokens initially; up to{" "}
+                    {REVIEW_POLICY.max_output_tokens.toLocaleString("en-US")}{" "}
+                    after truncation
+                  </dd>
                 </div>
               </dl>
               <p>
@@ -131,121 +141,129 @@ export function CouncilStatus({
         </div>
       </details>
       <div className="council-models">
-        {BEDROCK_MODELS.map((model, index) => {
-          const result = report?.models.find(
-            (item) => item.model_id === model.id,
-          );
-          const state = busy ? "pending" : (result?.status ?? "idle");
-          return (
-            <details
-              className={`council-model ${state}`}
-              key={model.id}
-              name="model-review-details"
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.currentTarget.open = false;
-                  event.currentTarget.querySelector("summary")?.focus();
-                }
-              }}
-            >
-              <summary>
-                <span className="council-model-number">0{index + 1}</span>
-                <span className="council-model-name">
-                  <strong>{model.label}</strong>
-                  <span>{model.provider}</span>
-                </span>
-                <span className="council-model-state">
+        {(report ? recordedCouncil(report.models) : BEDROCK_MODELS).map(
+          (model, index) => {
+            const result = report?.models.find(
+              (item) => item.model_id === model.id,
+            );
+            const state = busy ? "pending" : (result?.status ?? "idle");
+            return (
+              <details
+                className={`council-model ${state}`}
+                key={model.id}
+                name="model-review-details"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.currentTarget.open = false;
+                    event.currentTarget.querySelector("summary")?.focus();
+                  }
+                }}
+              >
+                <summary>
+                  <span className="council-model-number">0{index + 1}</span>
+                  <span className="council-model-name">
+                    <strong>{model.label}</strong>
+                    <span>{model.provider}</span>
+                  </span>
+                  <span className="council-model-state">
+                    {busy ? (
+                      <span className="spinner" />
+                    ) : result?.status === "succeeded" ? (
+                      <Icon name="check" size={13} />
+                    ) : (
+                      <span className="model-state-dot" />
+                    )}
+                    {busy
+                      ? "Reviewing"
+                      : result?.status === "succeeded"
+                        ? "Reviewed"
+                        : result?.status === "failed"
+                          ? explainReviewFailure(result.error).label
+                          : missingReport
+                            ? "No result"
+                            : hasKey
+                              ? "Ready"
+                              : "No key"}
+                  </span>
+                  <Icon name="chevron" size={13} />
+                </summary>
+                <div className="council-model-detail">
                   {busy ? (
-                    <span className="spinner" />
-                  ) : result?.status === "succeeded" ? (
-                    <Icon name="check" size={13} />
+                    <p>
+                      Reviews are in progress. The final report will show
+                      validated results from each model.
+                    </p>
+                  ) : result?.review ? (
+                    <>
+                      <p>{result.review.summary}</p>
+                      <span>
+                        {result.review.findings.length} candidates ·{" "}
+                        {(result.elapsed_ms / 1000).toFixed(1)}s
+                      </span>
+                    </>
+                  ) : result?.error ? (
+                    <>
+                      <strong>
+                        {explainReviewFailure(result.error).label}
+                      </strong>
+                      <p>{explainReviewFailure(result.error).explanation}</p>
+                      <p>{explainReviewFailure(result.error).nextStep}</p>
+                      <details className="model-technical">
+                        <summary>Technical details</summary>
+                        <p>
+                          {result.error.code}: {result.error.detail}
+                        </p>
+                      </details>
+                    </>
                   ) : (
-                    <span className="model-state-dot" />
-                  )}
-                  {busy
-                    ? "Reviewing"
-                    : result?.status === "succeeded"
-                      ? "Reviewed"
-                      : result?.status === "failed"
-                        ? explainReviewFailure(result.error).label
+                    <p>
+                      {missingReport
+                        ? "No validated report was received for this run. This model’s outcome is unknown."
                         : hasKey
-                          ? "Ready"
-                          : "No key"}
-                </span>
-                <Icon name="chevron" size={13} />
-              </summary>
-              <div className="council-model-detail">
-                {busy ? (
-                  <p>
-                    Reviews are in progress. The final report will show
-                    validated results from each model.
-                  </p>
-                ) : result?.review ? (
-                  <>
-                    <p>{result.review.summary}</p>
-                    <span>
-                      {result.review.findings.length} candidates ·{" "}
-                      {(result.elapsed_ms / 1000).toFixed(1)}s
-                    </span>
-                  </>
-                ) : result?.error ? (
-                  <>
-                    <strong>{explainReviewFailure(result.error).label}</strong>
-                    <p>{explainReviewFailure(result.error).explanation}</p>
-                    <p>{explainReviewFailure(result.error).nextStep}</p>
+                          ? "A key is saved in this tab. Model access is checked when you start a Bedrock Review."
+                          : "Add a Bedrock API key, then start a Bedrock Review."}
+                    </p>
+                  )}
+                  {!!result?.attempts?.length && (
+                    <ol
+                      className="attempt-ledger"
+                      aria-label={`${model.label} attempt history`}
+                    >
+                      {result.attempts.map((attempt) => (
+                        <li key={attempt.attempt}>
+                          <span>
+                            Attempt {attempt.attempt} · {attempt.status}
+                          </span>
+                          <span>
+                            {(attempt.elapsed_ms / 1000).toFixed(1)}s
+                            {attempt.retry_delay_ms > 0
+                              ? ` · ${(attempt.retry_delay_ms / 1000).toFixed(1)}s backoff`
+                              : ""}
+                          </span>
+                          {attempt.error_code && (
+                            <span className="attempt-error">
+                              {attempt.error_code}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                  {result?.review && report && (
                     <details className="model-technical">
-                      <summary>Technical details</summary>
+                      <summary>Review configuration</summary>
                       <p>
-                        {result.error.code}: {result.error.detail}
+                        Reasoning effort:{" "}
+                        {firstReviewReasoningEffort(report, model.id)}
                       </p>
                     </details>
-                  </>
-                ) : (
-                  <p>
-                    {hasKey
-                      ? "A key is saved in this tab. Model access is checked when you start a Bedrock Review."
-                      : "Add a Bedrock API key, then start a Bedrock Review."}
-                  </p>
-                )}
-                {!!result?.attempts?.length && (
-                  <ol
-                    className="attempt-ledger"
-                    aria-label={`${model.label} attempt history`}
-                  >
-                    {result.attempts.map((attempt) => (
-                      <li key={attempt.attempt}>
-                        <span>
-                          Attempt {attempt.attempt} · {attempt.status}
-                        </span>
-                        <span>
-                          {(attempt.elapsed_ms / 1000).toFixed(1)}s
-                          {attempt.retry_delay_ms > 0
-                            ? ` · ${(attempt.retry_delay_ms / 1000).toFixed(1)}s backoff`
-                            : ""}
-                        </span>
-                        {attempt.error_code && (
-                          <span className="attempt-error">
-                            {attempt.error_code}
-                          </span>
-                        )}
-                      </li>
-                    ))}
-                  </ol>
-                )}
-                {result?.review && report && (
-                  <details className="model-technical">
-                    <summary>Review configuration</summary>
-                    <p>
-                      Reasoning effort:{" "}
-                      {firstReviewReasoningEffort(report, model.id)}
-                    </p>
-                  </details>
-                )}
-                <code>{model.id}</code>
-              </div>
-            </details>
-          );
-        })}
+                  )}
+                  <code>{model.id}</code>
+                </div>
+              </details>
+            );
+          },
+        )}
       </div>
     </div>
   );

@@ -4,17 +4,19 @@ This maps the supplied **Multi-Agent AI** slides to the implemented smart-contra
 
 | Reference | Requirement | Implementation | Verification entry point |
 | --- | --- | --- | --- |
-| Multi-Agent AI Framework | Three specialized agents contribute to an orchestration layer | Fixed GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7 reviewers; deterministic scheduling, validation and report consolidation | `apps/web/src/server/bedrock.ts`; `tests/bedrock*.spec.ts` |
+| Multi-Agent AI Framework | Three specialized agents contribute to an orchestration layer | Fixed GPT-6 Astra, Claude Opus 5.5 and Grok 4.7 reviewers; deterministic scheduling, validation and report consolidation | `apps/web/src/server/bedrock.ts`; `tests/bedrock*.spec.ts` |
 | Framework: input, LLM, tools, memory, output | Explicit orchestration components | Input is a source snapshot; the existing reviewers provide LLM judgment; tools are bounded review calls and evidence validators; memory is the immutable report plus tab-scoped history; output is an auditable unified report | `src/lib/orchestration.ts`; `src/lib/final-report.ts`; `src/lib/evaluation.ts` |
 | Two Iterations: first pass | Send the same code independently to all three agents | No static findings or peer reports in first-pass prompts; accepted original contributions retained | `tests/bedrock-server.spec.ts`; `tests/orchestration.spec.ts` |
 | Two Iterations: targeted second pass | Give a model code and findings reported by peers but not by that model | Per-model candidate assignments; no call for an empty assignment; failed first-pass models remain unavailable | `src/lib/second-review.ts`; `src/server/second-review.ts`; `tests/second-review*.spec.ts` |
 | Two Iterations: consensus remarks | Consolidate all findings and show which models identified or agreed with each | All first-pass findings remain in the final report, with first-round discoverers, second-round judgments, coverage, outstanding issues and separate severity alignment | `src/lib/final-report.ts`; `src/lib/second-review-export.ts`; final-report UI |
 | Meeting requirement: severity differences | Make substantive differences inspectable | Explicit extension: severity-disputed findings are reassessed by the successful reviewers, including original discoverers; withdrawal remains possible for assigned claims | Second-review plan and summary regression tests |
 | Framework: reduce false positives and false negatives | Evaluate quality rather than infer it from agreement | Source- and baseline-bound human labels; reference issue inventory; paired before/after metrics only when review conditions are satisfied | `src/lib/evaluation-adjudication.ts`; `tests/evaluation*.spec.ts` |
-| Meeting requirement: execution reliability | Bounded retry, time limits and resource controls | One transient retry per model within an absolute deadline; partial results retained; no unlimited debate | `src/server/bedrock-transport.ts`; transport and server tests |
+| Meeting requirement: execution reliability | Bounded retry, time limits and resource controls | Up to three attempts per model within one absolute deadline; partial results retained; no unlimited debate | `src/server/bedrock-transport.ts`; transport and server tests |
 | Security Architecture Review | Consider trust boundaries and reuse | Architecture review of this platform's browser, application and AWS boundaries; the restaurant/IoT diagram illustrates another domain, not an implemented product feature | [Architecture](ARCHITECTURE.md); [limitations](LIMITATIONS.md) |
 
 Paths in the table are relative to `apps/web/` where prefixed with `src/` or `tests/`. Test files use simulated responses unless explicitly stated otherwise in [verification](VERIFICATION.md).
+
+Open **Reference cases → DAO Treasury** to review the supplied contract independently of the five original test cases. The goal is to inspect what the agents report, including a possible empty result; no planted risk or expected model decision is assigned.
 
 ## Decisions made explicit
 

@@ -1,0 +1,9 @@
+[
+  {
+    "id": "dao-treasury",
+    "filename": "muxiang_dao_treasury.sol",
+    "title": "DAO Treasury",
+    "summary": "An owner-managed treasury that holds and transfers tokens and Ether. Supplemental review case.",
+    "caveat": "Previously audited according to the contributor. No expected findings are supplied. This review covers the submitted file, not the imported OpenZeppelin implementations."
+  }
+]

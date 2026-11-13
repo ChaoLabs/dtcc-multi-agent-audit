@@ -10,6 +10,8 @@ import {
 import {
   buildFinalReviewReport,
   currentModelSeverities,
+  findingHeadline,
+  oppositionNotice,
   type FinalModelJudgment,
   type FinalFinding,
 } from "@/lib/final-report";
@@ -53,8 +55,6 @@ function findingExplanation(finding: FinalFinding): string {
   }
   if (finding.uncertain_models.length)
     reasons.push("Additional context is needed to assess the risk.");
-  if (finding.not_supported_models.length)
-    reasons.push("Model opinions differ on whether the risk is present.");
   if (finding.severity_disagreement)
     reasons.push("The proposed severity ratings differ.");
   return reasons.join(" ");
@@ -266,7 +266,7 @@ export function FinalReportPanel({
                       ? " · severity disputed"
                       : ""}
                   </span>
-                  <h3>{finding.title}</h3>
+                  <h3>{findingHeadline(finding)}</h3>
                 </div>
                 <span
                   className={`second-verdict ${finding.pending_reassessment_models.length ? "unresolved" : finding.outcome}`}
@@ -281,9 +281,14 @@ export function FinalReportPanel({
                 </span>
               </div>
               <div className="final-risk-content">
+                {oppositionNotice(finding) && (
+                  <p className="risk-support-caption">
+                    {oppositionNotice(finding)}
+                  </p>
+                )}
                 <section>
                   <h4>
-                    {finding.outcome === "not_supported"
+                    {finding.not_supported_models.length > 0
                       ? "Original risk explanation"
                       : "Risk explanation"}
                   </h4>
@@ -291,7 +296,7 @@ export function FinalReportPanel({
                 </section>
                 <section className="final-recommended-action">
                   <h4>
-                    {finding.outcome === "not_supported"
+                    {finding.not_supported_models.length > 0
                       ? "Original recommended action"
                       : "Recommended action"}
                   </h4>

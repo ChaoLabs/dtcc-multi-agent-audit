@@ -1,5 +1,7 @@
 /** Public, versioned execution limits; never credentials or provider overrides. */
-export const POLICY_VERSION = "bounded-review-v3-validation-recovery" as const;
+export const POLICY_VERSION = "bounded-review-v4-output-recovery" as const;
+export const PREVIOUS_POLICY_VERSION =
+  "bounded-review-v3-validation-recovery" as const;
 export const PROMPT_VERSION =
   "independent-review-v5-bounded-evidence-correction-grok-medium" as const;
 export type IndependentPromptVersion =
@@ -17,7 +19,7 @@ export const LEGACY_REVIEW_POLICY = Object.freeze({
   max_provider_requests: 6,
 } as const);
 
-export const REVIEW_POLICY = Object.freeze({
+export const PREVIOUS_REVIEW_POLICY = Object.freeze({
   ...LEGACY_REVIEW_POLICY,
   max_attempts_per_model: 3,
   model_timeout_ms: 270_000,
@@ -25,16 +27,51 @@ export const REVIEW_POLICY = Object.freeze({
   max_provider_requests: 9,
 } as const);
 
-export const REVIEW_CLIENT_TIMEOUT_MS = 295_000;
+export function reviewDeadlines(vercel: boolean) {
+  return vercel
+    ? {
+        model_timeout_ms: 270_000,
+        overall_timeout_ms: 285_000,
+        client_ms: 295_000,
+      }
+    : {
+        model_timeout_ms: 660_000,
+        overall_timeout_ms: 720_000,
+        client_ms: 745_000,
+      };
+}
+
+// Only this non-sensitive deployment flag is included in both server and browser builds.
+const activeDeadlines = reviewDeadlines(
+  process.env.NEXT_PUBLIC_REVIEW_HOST === "vercel",
+);
+export const REVIEW_POLICY = Object.freeze({
+  ...PREVIOUS_REVIEW_POLICY,
+  model_timeout_ms: activeDeadlines.model_timeout_ms,
+  overall_timeout_ms: activeDeadlines.overall_timeout_ms,
+  initial_output_tokens: 32_768,
+  max_output_tokens: 65_536,
+} as const);
+export const REVIEW_CLIENT_TIMEOUT_MS = activeDeadlines.client_ms;
+export function validRecordedDeadlines(model: unknown, overall: unknown) {
+  return [reviewDeadlines(true), reviewDeadlines(false)].some(
+    (p) => p.model_timeout_ms === model && p.overall_timeout_ms === overall,
+  );
+}
 
 export type ReviewPolicyVersion =
   | typeof POLICY_VERSION
+  | typeof PREVIOUS_POLICY_VERSION
   | "bounded-review-v2-network-recovery"
   | "bounded-review-v1";
 
 /** Historical records keep the execution budget that governed their requests. */
 export function reviewPolicyLimits(version: ReviewPolicyVersion) {
-  return version === POLICY_VERSION ? REVIEW_POLICY : LEGACY_REVIEW_POLICY;
+  if (version === POLICY_VERSION)
+    return { ...REVIEW_POLICY, ...reviewDeadlines(false) };
+  return version === PREVIOUS_POLICY_VERSION
+    ? PREVIOUS_REVIEW_POLICY
+    : LEGACY_REVIEW_POLICY;
 }
 
 // Separately authored microexamples. Never import the five regression cases or

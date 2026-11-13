@@ -6,7 +6,7 @@ import {
   SECOND_REVIEW_POLICY,
   type SecondReviewReport,
 } from "@/lib/second-review";
-import { BEDROCK_MODELS } from "@/lib/bedrock-config";
+import { BEDROCK_MODELS, recordedCouncil } from "@/lib/bedrock-config";
 import { explainReviewFailure } from "@/lib/review-failure";
 import { buildFinalReviewReport } from "@/lib/final-report";
 import { Icon } from "./icons";
@@ -58,7 +58,10 @@ export function SecondReviewPanel({
   const initialCompleted = baseline.models.filter(
     (model) => model.status === "succeeded",
   ).length;
-  const eligible = !plan.skipped_reason && plan.candidate_ids.length > 0;
+  const roster = recordedCouncil(baseline.models);
+  const archived = roster !== BEDROCK_MODELS;
+  const eligible =
+    !archived && !plan.skipped_reason && plan.candidate_ids.length > 0;
   const completed =
     report?.models.filter((model) => model.status === "succeeded").length ?? 0;
   const consolidated = report ? buildFinalReviewReport(baseline, report) : null;
@@ -76,8 +79,9 @@ export function SecondReviewPanel({
     open();
     onRun();
   };
-  const unavailable =
-    plan.skipped_reason === "insufficient_reviewers"
+  const unavailable = archived
+    ? "This report is from a previous model council. Run a new Bedrock Review to request a new reassessment."
+    : plan.skipped_reason === "insufficient_reviewers"
       ? "Second Review requires at least two completed independent reviews. First-round findings remain available."
       : "No eligible second-round assignments. Proceed to the Final Report.";
 
@@ -225,7 +229,7 @@ export function SecondReviewPanel({
             className="second-review-models"
             aria-label="Second-round model outcomes"
           >
-            {BEDROCK_MODELS.map((model) => {
+            {roster.map((model) => {
               const result = report?.models.find(
                 (entry) => entry.model_id === model.id,
               );
@@ -363,11 +367,12 @@ export function SecondReviewPanel({
                     {!!current.pending_reassessment_models.length && (
                       <p className="finding-next-step">
                         No accepted Second Review response from{" "}
-                        {BEDROCK_MODELS.filter((model) =>
-                          current.pending_reassessment_models.includes(
-                            model.id,
-                          ),
-                        )
+                        {roster
+                          .filter((model) =>
+                            current.pending_reassessment_models.includes(
+                              model.id,
+                            ),
+                          )
                           .map((model) => model.label)
                           .join(", ")}
                         . This review remains incomplete.
@@ -416,7 +421,7 @@ export function SecondReviewPanel({
                             </strong>
                           </span>
                         </div>
-                        {BEDROCK_MODELS.map((model) => {
+                        {roster.map((model) => {
                           const run = report.models.find(
                             (item) => item.model_id === model.id,
                           );

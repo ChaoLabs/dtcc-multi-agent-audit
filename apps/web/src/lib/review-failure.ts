@@ -42,7 +42,7 @@ export function explainReviewFailure(
       nextStep:
         "Keep the available results and ask your AWS administrator to review the applicable policy.",
     };
-  if (legacyStop(error, "max_tokens"))
+  if (error?.code === "output_limit" || legacyStop(error, "max_tokens"))
     return {
       label: "Response too long",
       explanation:
@@ -87,6 +87,13 @@ export function explainReviewFailure(
     };
 
   switch (error?.code) {
+    case "refusal":
+      return {
+        label: "Model declined review",
+        explanation:
+          "The model declined to complete this review. No judgment from it was counted.",
+        nextStep: "Use the other available findings or request a human review.",
+      };
     case "bedrock_model_timeout":
       return {
         label: "Provider time limit reached",

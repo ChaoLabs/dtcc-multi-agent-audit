@@ -1,3 +1,4 @@
+import { reviewHeaders } from "@/lib/review-http";
 import { REVIEW_CLIENT_TIMEOUT_MS } from "@/lib/review-policy";
 import { validateApiKey } from "@/lib/bedrock-config";
 import type { CouncilReport } from "@/lib/orchestration";
@@ -63,7 +64,7 @@ export async function requestSecondReview({
     if (bounded.aborted) throw aborted();
     const pending = transport("/api/reviews/second-round", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: reviewHeaders,
       body: JSON.stringify({ api_key: key, filename, source, baseline }),
       credentials: "omit",
       cache: "no-store",

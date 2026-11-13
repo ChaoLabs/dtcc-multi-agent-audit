@@ -1455,9 +1455,9 @@ test("extended second-round imports reject late accepted judgments without chang
     10,
   );
   const late = structuredClone(report);
-  late.models[0].elapsed_ms = 270_011;
-  late.models[0].attempts[0].elapsed_ms = 270_011;
-  late.elapsed_ms = 270_012;
+  late.models[0].elapsed_ms = REVIEW_POLICY.model_timeout_ms + 11;
+  late.models[0].attempts[0].elapsed_ms = REVIEW_POLICY.model_timeout_ms + 11;
+  late.elapsed_ms = REVIEW_POLICY.model_timeout_ms + 12;
   await expect(
     validateSecondReviewReport(late, source, original),
   ).rejects.toThrow("execution deadline");
@@ -1488,4 +1488,45 @@ test("extended second-round imports reject late accepted judgments without chang
   );
   expect(timedOut.status).toBe("partial");
   expect(timedOut.models[0].error!.code).toBe("timeout");
+});
+
+test("second-round deadline profiles and output-limit escalation cannot be backdated", async () => {
+  const first = await baseline();
+  const rows = reassessments(first);
+  rows[0].attempts.unshift({
+    attempt: 1,
+    status: "failed",
+    elapsed_ms: 1,
+    error_code: "output_limit",
+    retry_delay_ms: 0,
+  });
+  rows[0].attempts[1].attempt = 2;
+  rows[0].elapsed_ms += 1;
+  const report = await buildSecondReviewReport(rows, source, first, 15);
+  for (const [model_timeout_ms, overall_timeout_ms] of [
+    [270_000, 285_000],
+    [660_000, 720_000],
+  ]) {
+    Object.assign(report.execution, { model_timeout_ms, overall_timeout_ms });
+    expect(await validateSecondReviewReport(report, source, first)).toEqual(
+      report,
+    );
+  }
+  report.execution.model_timeout_ms = 270_000;
+  await expect(
+    validateSecondReviewReport(report, source, first),
+  ).rejects.toThrow("deadline combination");
+  report.models[0].attempts[0].error_code = "bedrock_model_timeout";
+  report.policy_version = "targeted-peer-review-v5-extended-recovery";
+  await expect(
+    validateSecondReviewReport(report, source, first),
+  ).rejects.toThrow("execution accounting");
+  report.execution.overall_timeout_ms = 285_000;
+  expect(await validateSecondReviewReport(report, source, first)).toEqual(
+    report,
+  );
+  report.models[0].attempts[0].error_code = "output_limit";
+  await expect(
+    validateSecondReviewReport(report, source, first),
+  ).rejects.toThrow("does not permit retrying");
 });
