@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import supplemental from "../src/generated/supplemental-cases.json";
 import type { ReviewFinding } from "../src/generated/review";
 import { BEDROCK, BEDROCK_MODELS } from "../src/lib/bedrock-config";
 import {
@@ -836,7 +837,13 @@ test("Markdown exports execution limits, full contribution provenance and separa
   expect(text).toContain(
     "## Independent static baseline\n\nThis appendix records only the separate on-device static analysis. Its execution-stage statuses and limitations do not describe the Bedrock reviews above.",
   );
-  expect(text.endsWith(markdownReport(staticReport))).toBe(true);
+  const appendix = text.split("## Independent static baseline")[1];
+  expect(appendix).toContain("Static rules: completed");
+  expect(appendix).toContain("In the static pass only: no Bedrock model");
+  expect(appendix).not.toContain("Orchestration: not-implemented");
+  expect(markdownReport(staticReport)).toContain(
+    "Orchestration: not-implemented",
+  );
 });
 
 test("subtraction assignment anchors merge the same arithmetic site but preserve distinct sites", async () => {
@@ -928,9 +935,194 @@ test("archived arithmetic reports without a grouping version retain their histor
     ),
   ).rejects.toThrow();
   const current = await buildCouncilReport(models, input, 20);
-  expect(current.aggregation_version).toBe("source-locus-v2");
+  expect(current.aggregation_version).toBe("source-locus-v3");
   expect(current.findings).toHaveLength(1);
   expect((await validateCouncil(current, input)).findings[0].agreement).toBe(3);
+});
+
+test("Treasury source anchors reconcile duplicate payment risks while preserving severity, dissent and v2 reports", async () => {
+  const input = supplemental.find((entry) => entry.id === "dao-treasury")!
+    .report.input.source;
+  const claim = (
+    title: string,
+    start: number,
+    end: number,
+    category = "other",
+    severity: ReviewFinding["proposed_severity"] = "LOW",
+  ) => ({
+    ...finding(title, start, end, category, severity, input),
+    rationale:
+      category === "denial-of-service"
+        ? "The native transfer gives the receiving contract a 2,300 gas stipend."
+        : "Inspect how the cited operation affects the recipient.",
+  });
+  const contributions = [
+    [
+      claim(
+        "Native transfers can fail for contract recipients that need more gas",
+        77,
+        77,
+        "denial-of-service",
+      ),
+      claim(
+        "Native transfer with call does not attach the payment to the requested function",
+        59,
+        60,
+      ),
+    ],
+    [
+      claim(
+        "Native currency transfer uses fixed 2300 gas stipend and may fail for contract recipients",
+        75,
+        78,
+        "denial-of-service",
+      ),
+      claim(
+        "Funds are sent before the follow-up call rather than atomically with it",
+        37,
+        45,
+      ),
+      claim(
+        "Owner can make arbitrary external calls from the treasury",
+        54,
+        61,
+        "access-control",
+      ),
+    ],
+    [
+      claim(
+        "Native-coin payments can fail for contract recipients",
+        77,
+        77,
+        "denial-of-service",
+        "MEDIUM",
+      ),
+      claim("Native-coin amount is not attached to the follow-up call", 59, 60),
+      claim(
+        "Token follow-up call can execute arbitrary recipient logic",
+        43,
+        44,
+      ),
+    ],
+  ];
+  const models = await runs(contributions, input);
+  const current = await buildCouncilReport(models, input, 20);
+  expect(current.findings).toHaveLength(5);
+  expect(current.findings.map((f) => f.agreement).sort()).toEqual([
+    1, 1, 1, 2, 3,
+  ]);
+  expect(current.findings[0]).toMatchObject({
+    agreement: 3,
+    proposed_severity: "MEDIUM",
+    severity_disagreement: true,
+    supporting_models: models.map((m) => m.model_id),
+  });
+  expect(
+    current.findings.find((f) => f.agreement === 2)?.supporting_models,
+  ).toEqual([models[0].model_id, models[2].model_id]);
+  expect(current.models.map((m) => m.review?.findings)).toEqual(contributions);
+  await expect(validateCouncil(current, input)).resolves.toEqual(current);
+  // Pinned v2 IDs check the old evidence grouping across a source/roster identical
+  // to the current one, without including a live model transcript or credentials.
+  const v2Ids = [
+    ["3f1c179b2843ffc076483510", "e6310f78582c2d49ac6887e7"],
+    [
+      "c3539b0a35c24d11b713e836",
+      "f477799a2cdacd840b6b06bc",
+      "42fc7c6f88da805b415a27e6",
+    ],
+    [
+      "a0ec61077b26f06b9b5a6500",
+      "f6bf10ae825137b82fbd593f",
+      "e6435e52eecd6fff63772acd",
+    ],
+  ];
+  const archived: CouncilReport = {
+    ...current,
+    aggregation_version: "source-locus-v2",
+    findings: contributions
+      .flatMap((items, mi) =>
+        items.map((item, fi) => ({
+          ...item,
+          id: v2Ids[mi][fi],
+          agreement: 1,
+          confidence: "LOW" as const,
+          supporting_models: [models[mi].model_id],
+          members: [{ model_id: models[mi].model_id, finding_index: fi }],
+          severity_disagreement: false,
+        })),
+      )
+      .sort(
+        (a, b) =>
+          Number(b.proposed_severity === "MEDIUM") -
+            Number(a.proposed_severity === "MEDIUM") ||
+          a.evidence.line_start - b.evidence.line_start ||
+          a.id.localeCompare(b.id),
+      ),
+  };
+  await expect(validateCouncil(archived, input)).resolves.toEqual(archived);
+  await expect(
+    validateCouncil(
+      { ...archived, aggregation_version: "source-locus-v3" },
+      input,
+    ),
+  ).rejects.toThrow();
+});
+
+test("ambiguous payment anchors and other mechanisms at the same call remain independent", async () => {
+  const input = [
+    "contract Billing {",
+    "function send(address payable to, uint amount) external {",
+    "to.transfer(amount);",
+    "to.transfer(amount);",
+    "to.functionCallWithValue(data, amount);",
+    "}",
+    "}",
+  ].join("\n");
+  const limited = (title: string, start: number, end: number) => ({
+    ...finding(title, start, end, "denial-of-service", "LOW", input),
+    rationale: "The payment uses a fixed 2300 gas stipend.",
+  });
+  const models = await runs(
+    [
+      [
+        limited("Native payments may fail for some receivers", 3, 4),
+        finding(
+          "Native amount not forwarded to function",
+          5,
+          5,
+          "other",
+          "LOW",
+          input,
+        ),
+      ],
+      [
+        limited("Native transfers can fail for contract recipients", 3, 3),
+        finding(
+          "Native payment is not attached to the call",
+          5,
+          5,
+          "other",
+          "LOW",
+          input,
+        ),
+      ],
+      [
+        finding(
+          "Recipient refuses native payment",
+          3,
+          3,
+          "denial-of-service",
+          "LOW",
+          input,
+        ),
+      ],
+    ],
+    input,
+  );
+  const report = await buildCouncilReport(models, input, 20);
+  expect(report.findings).toHaveLength(5);
+  expect(report.findings.every((item) => item.agreement === 1)).toBe(true);
 });
 
 async function recoveredRuns(code = "bedrock_network", delay = 10_000) {

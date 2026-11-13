@@ -103,7 +103,7 @@ export function councilMarkdown(report: AuditReport, council: CouncilReport) {
         ]),
     "## Independent static baseline",
     "This appendix records only the separate on-device static analysis. Its execution-stage statuses and limitations do not describe the Bedrock reviews above.",
-    markdownReport(report),
+    markdownReport(report, null, "static-appendix"),
   ].join("\n\n");
 }
 export function downloadCouncilReport(

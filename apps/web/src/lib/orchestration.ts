@@ -13,7 +13,8 @@ import {
 } from "@/lib/review-policy";
 import { sha256, sourceLines } from "@/lib/static-analysis";
 
-export const AGGREGATION_VERSION = "source-locus-v2" as const;
+export const AGGREGATION_VERSION = "source-locus-v3" as const;
+type AggregationVersion = typeof AGGREGATION_VERSION | "source-locus-v2";
 
 /** Shared vocabulary for independent model prompts and deterministic aggregation. */
 export const CATEGORIES = [
@@ -89,7 +90,7 @@ export type ReviewQueueItem = {
 
 type CouncilBase = {
   /** Absent in pre-v2 records, which retain the original arithmetic grouping. */
-  aggregation_version?: typeof AGGREGATION_VERSION;
+  aggregation_version?: AggregationVersion;
   engine: "evidence-consensus";
   source_sha256: string;
   created_at: string;
@@ -244,18 +245,67 @@ const anchorPatterns: Record<string, RegExp> = {
   "signature-replay": /\b(?:ecrecover|recover)\s*\(/g,
 };
 
+/** Classify the reported mechanism, not the outcome or a suggested fix.
+ * A match still requires exactly one executable call in the model's own citation.
+ * Raw wording and the independent model index remain attached to every member.
+ */
+function paymentMechanism(
+  category: string,
+  finding: ReviewFinding,
+): { name: string; pattern: RegExp } | undefined {
+  const title = finding.title.toLowerCase();
+  if (!/\b(?:native|ether|eth)\b/.test(title)) return;
+  if (
+    category === "denial-of-service" &&
+    /\b(?:transfers?|payments?|payouts?)\b/.test(title) &&
+    /\b(?:fail\w*|revert\w*|stipend|gas)\b/.test(title) &&
+    /\b(?:2,?300\s+gas|gas\s+stipend)\b|\bstipend\s*\(?(?:of\s+)?2,?300\b/i.test(
+      title + " " + finding.rationale,
+    )
+  )
+    return {
+      name: "fixed-stipend",
+      pattern: /\.\s*(?:send|transfer)\s*\(\s*[\w$.]+\s*\)/g,
+    };
+  if (
+    category === "other" &&
+    /\b(?:value|amount|payment|coin|ether|eth)\b/.test(title) &&
+    /\b(?:call|function)\b/.test(title) &&
+    /\b(?:not\s+(?:attach(?:ed)?|forward(?:ed)?)|without\s+(?:native\s+)?value)\b/.test(
+      title,
+    )
+  )
+    return {
+      name: "call-without-payment",
+      // Neither an explicit {value: ...} call nor functionCallWithValue matches.
+      pattern: /\.\s*(?:functionCall|call)\s*\(/g,
+    };
+}
+
 function groupingKey(
   finding: ReviewFinding,
   code: string,
   offsets: number[],
   scopes: Scope[],
-  legacyArithmetic = false,
+  version: AggregationVersion | "unmarked",
 ): { category: string; locus: string } {
   const category = categoryOf(finding);
   const start = offsets[finding.evidence.line_start - 1];
   const end = offsets[finding.evidence.line_end] ?? code.length;
+  const mechanism =
+    version === AGGREGATION_VERSION
+      ? paymentMechanism(category, finding)
+      : undefined;
+  if (mechanism) {
+    const anchors = [...code.slice(start, end).matchAll(mechanism.pattern)];
+    if (anchors.length === 1)
+      return {
+        category,
+        locus: `payment:${mechanism.name}:${start + anchors[0].index}`,
+      };
+  }
   const pattern =
-    legacyArithmetic && category === "arithmetic"
+    version === "unmarked" && category === "arithmetic"
       ? /\+\+|--|[+*/%]=?|-(?!=)|\bunchecked\b/g
       : Object.hasOwn(anchorPatterns, category)
         ? anchorPatterns[category]
@@ -566,7 +616,7 @@ async function aggregate(
   models: ModelRun[],
   source: string,
   hash: string,
-  legacyArithmetic = false,
+  version: AggregationVersion | "unmarked" = AGGREGATION_VERSION,
 ): Promise<ConsensusFinding[]> {
   const normalized = sourceLines(source).join("\n");
   const code = executableSource(normalized);
@@ -593,7 +643,7 @@ async function aggregate(
         code,
         offsets,
         scopes,
-        legacyArithmetic,
+        version,
       );
       const key = `${category}|${locus}`;
       const group = groups.get(key) ?? { category, entries: [] };
@@ -777,7 +827,8 @@ export async function validateCouncil(
     (!withExecution && value.schema_version !== "2.0.0") ||
     value.engine !== "evidence-consensus" ||
     (Object.hasOwn(value, "aggregation_version") &&
-      value.aggregation_version !== AGGREGATION_VERSION) ||
+      value.aggregation_version !== AGGREGATION_VERSION &&
+      value.aggregation_version !== "source-locus-v2") ||
     !timestamp(value.created_at) ||
     !duration(value.elapsed_ms)
   )
@@ -794,7 +845,11 @@ export async function validateCouncil(
     models,
     source,
     hash,
-    !Object.hasOwn(value, "aggregation_version"),
+    value.aggregation_version === AGGREGATION_VERSION
+      ? AGGREGATION_VERSION
+      : value.aggregation_version === "source-locus-v2"
+        ? "source-locus-v2"
+        : "unmarked",
   );
   if (
     value.status !== outcome(models) ||

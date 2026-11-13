@@ -49,6 +49,25 @@ export type FinalFinding = {
   requires_review: boolean;
   next_action: string;
 };
+/** Titles come from original model reports and can be disputed later. */
+export function findingHeadline(finding: FinalFinding): string {
+  if (finding.outcome === "not_supported")
+    return `Unsupported claim: ${finding.title}`;
+  if (finding.not_supported_models.length)
+    return `Disputed claim: ${finding.title}`;
+  return finding.title;
+}
+
+/** A missing or uncertain response is never an explicit objection. */
+export function oppositionNotice(finding: FinalFinding): string | null {
+  const count = finding.not_supported_models.length;
+  if (!count) return null;
+  const denominator = finding.judgments.length;
+  const who =
+    count === 1 ? "1 model explicitly does" : `${count} models explicitly do`;
+  return `${who} not support this claim (${count}/${denominator}). Verify the original claim before acting on its recommendation.`;
+}
+
 export type FinalReviewReport = {
   schema_version: "1.1.0";
   kind: "dtcc-consolidated-findings";

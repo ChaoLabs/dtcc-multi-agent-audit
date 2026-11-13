@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import cases from "../src/generated/cases.json";
 import { buildCouncilReport } from "../src/lib/orchestration";
+import { secondReviewMarkdown } from "../src/lib/second-review-export";
 import { buildSecondReviewReport } from "../src/lib/second-review";
 import {
   syntheticBaseline,
@@ -481,4 +482,45 @@ test("a second-round timeout remains amber without erasing earlier support or se
   );
   expect(secondText).toContain("Original finding retained");
   expect(secondText).not.toContain("was not assigned a peer-miss reassessment");
+});
+
+test("opposed claims qualify the headline and proposed action in the final UI and Markdown", async () => {
+  const baseline = await syntheticBaseline(source);
+  const second = await syntheticSecondReview(source, baseline, [
+    "supported",
+    "not_supported",
+    "not_supported",
+  ]);
+  const markup = renderReport({ baseline, secondRound: second });
+  const markdown = (await secondReviewMarkdown(baseline, second)).split(
+    "## Method and interpretation",
+  )[0];
+  for (const view of [markup, markdown]) {
+    expect(view).toContain("Disputed claim: ");
+    expect(view).toContain(
+      "2 models explicitly do not support this claim (2/3)",
+    );
+  }
+  expect(markup.indexOf("2 models explicitly")).toBeLessThan(
+    markup.indexOf("Original risk explanation"),
+  );
+  expect(markup).toContain("Original recommended action");
+  expect(markdown.indexOf("2 models explicitly")).toBeLessThan(
+    markdown.indexOf("Original finding and potential impact"),
+  );
+  expect(markdown).toContain("Reasons given for non-support");
+  expect(markdown).toContain(
+    "Original recommendation — evaluate before acting",
+  );
+  expect(markdown).toContain("Latest available support: 1/3 models");
+  const uncertain = await syntheticSecondReview(source, baseline, [
+    "supported",
+    "uncertain",
+    "uncertain",
+  ]);
+  const unresolved = (await secondReviewMarkdown(baseline, uncertain)).split(
+    "## Method and interpretation",
+  )[0];
+  expect(unresolved).not.toContain("explicitly do not support");
+  expect(unresolved).not.toContain("Disputed claim: ");
 });

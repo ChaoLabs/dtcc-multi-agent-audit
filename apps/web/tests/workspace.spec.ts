@@ -1201,7 +1201,7 @@ test("retried reviews show their attempt history and retain severity disagreemen
   await page.goto(production);
   await runApi(page);
   await expect(page.locator(".consensus-summary")).toContainText(
-    "4 / 6 attempts",
+    "4 / 9 attempts",
   );
   await page.locator(".findings-options > summary").click();
   const queue = page.getByRole("button", { name: /^Review queue/ });
