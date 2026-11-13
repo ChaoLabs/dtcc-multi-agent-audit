@@ -5,6 +5,8 @@ import { REVIEW_POLICY } from "../src/lib/review-policy";
 import { validateCouncil, type CouncilReport } from "../src/lib/orchestration";
 import {
   buildSecondReviewPlan,
+  secondReviewBaselineHash,
+  type SecondReviewReport,
   validateSecondReviewReport,
 } from "../src/lib/second-review";
 import {
@@ -18,6 +20,8 @@ import {
   downloadSecondReviewReport,
   secondReviewMarkdown,
 } from "../src/lib/second-review-export";
+import { buildFinalReviewReport } from "../src/lib/final-report";
+import { reviewStageAvailability } from "../src/lib/review-stages";
 import { sourceLines } from "../src/lib/static-analysis";
 
 const key = "bedrock-api-key-SYNTHETIC_SECOND_REVIEW_TEST";
@@ -204,7 +208,7 @@ test("second review uses fixed independent transports, masked peer identities, s
       expect(init?.redirect).toBe("error");
       expect(init?.cache).toBe("no-store");
       const body = JSON.parse(init?.body as string);
-      expect(body.inferenceConfig).toEqual({ maxTokens: 8192 });
+      expect(body.inferenceConfig).toEqual({ maxTokens: 32_768 });
       expect(body.toolConfig).toBeUndefined();
       expect(body.tools).toBeUndefined();
       systems.push(body.system[0].text);
@@ -737,6 +741,7 @@ for (const sequence of [
 for (const refusal of [
   "unauthorized",
   "denied",
+  "refusal",
   "content_filtered",
   "guardrail_intervened",
   "invalid-json",
@@ -859,6 +864,45 @@ test("insufficient remaining time prevents an evidence-correction request withou
   expect(failed.error!.code).toBe("invalid_evidence");
 });
 
+test("a truncated assigned peer starts over with the same claims and a larger output budget", async () => {
+  const first = await baseline("disputed");
+  const immutable = JSON.stringify(first);
+  const calls = new Map<string, string[]>();
+  const response = await handleSecondReview(
+    request(first),
+    async (url, init) => {
+      const id = String(url).split("/model/")[1].split("/")[0];
+      const seen = calls.get(id) ?? [];
+      seen.push(String(init?.body));
+      calls.set(id, seen);
+      if (id === grokId && seen.length === 1)
+        return Response.json(
+          payload({ summary: "PRIVATE_TRUNCATED_PEER" }, "max_tokens"),
+        );
+      return Response.json(payload(providerContent(content(first), url)));
+    },
+    createLimiter(),
+    fastTiming,
+  );
+  const result = await validateSecondReviewReport(
+    await response.json(),
+    source,
+    first,
+  );
+  expect(result.status).toBe("completed");
+  expect(JSON.stringify(first)).toBe(immutable);
+  expect(result.execution.total_attempts).toBe(4);
+  const [a, b] = calls.get(grokId)!.map((v) => JSON.parse(v));
+  expect(a.inferenceConfig.maxTokens).toBe(32_768);
+  expect(b).toEqual({ ...a, inferenceConfig: { maxTokens: 65_536 } });
+  expect(
+    result.models
+      .find((r) => r.model_id === grokId)
+      ?.attempts.map((a) => a.error_code),
+  ).toEqual(["output_limit", null]);
+  expect(JSON.stringify(result)).not.toContain("PRIVATE_TRUNCATED_PEER");
+});
+
 for (const invalid of [
   "missing",
   "duplicate",
@@ -908,11 +952,11 @@ for (const invalid of [
       source,
       first,
     );
-    expect(calls).toBe(invalid === "truncated" ? 3 : 5);
+    expect(calls).toBe(invalid === "truncated" ? 4 : 5);
     expect(report.status).toBe("partial");
     expect(report.models[0].review).toBeNull();
     expect(report.models[0].attempts).toHaveLength(
-      invalid === "truncated" ? 1 : 3,
+      invalid === "truncated" ? 2 : 3,
     );
     expect(JSON.stringify(report)).not.toContain("PRIVATE_REPORT_MARKER");
     const expected = {
@@ -2004,13 +2048,13 @@ test("one model deadline preserves successful second reviews and cancels a stall
       return Response.json(payload(providerContent(content(first), url)));
     },
     createLimiter(),
-    { ...fastTiming, modelTimeoutMs: 40, overallTimeoutMs: 150 },
+    { ...fastTiming, modelTimeoutMs: 1_000, overallTimeoutMs: 4_000 },
   );
-  const report = await validateSecondReviewReport(
-    await response.json(),
-    source,
-    first,
-  );
+  const report: SecondReviewReport = await response.json();
+  // Fast injected timers exercise the supervisor, not a portable production budget.
+  await expect(
+    validateSecondReviewReport(report, source, first),
+  ).rejects.toThrow("deadline combination");
   expect(calls).toBe(3);
   expect(bodyCancelled).toBe(true);
   expect(report.status).toBe("partial");
@@ -2043,11 +2087,11 @@ test("overall second-review deadline bounds a non-cooperative transport and pres
     await new Promise<void>((resolve) => setImmediate(resolve));
     deadline.abort(new DOMException("Deadline expired", "TimeoutError"));
     const response = await pending;
-    const report = await validateSecondReviewReport(
-      await response.json(),
-      source,
-      first,
-    );
+    const report: SecondReviewReport = await response.json();
+    // Fast injected timers exercise the supervisor, not a portable production budget.
+    await expect(
+      validateSecondReviewReport(report, source, first),
+    ).rejects.toThrow("deadline combination");
     expect(report.status).toBe("partial");
     expect(report.models.map((model) => model.status)).toEqual([
       "succeeded",
@@ -2179,4 +2223,118 @@ test("admission rejection explicitly permits one safe recovery without provider 
   } finally {
     release();
   }
+});
+
+test("archived councils retain original identities in both rounds and cannot trigger new provider requests", async () => {
+  const current = await baseline();
+  // A partial second round makes the recorded missing-model IDs observable.
+  const currentSecond = await (
+    await handleSecondReview(
+      request(current),
+      async (url) =>
+        String(url).includes(claudeId)
+          ? new Response(null, { status: 403 })
+          : Response.json(payload(providerContent(content(current), url))),
+      createLimiter(),
+      fastTiming,
+    )
+  ).json();
+  const archivedCopy = (value: unknown, identities: Record<string, string>) =>
+    JSON.parse(
+      JSON.stringify(value, (_key, item) =>
+        typeof item === "string"
+          ? Object.entries(identities).reduce(
+              (text, [from, to]) => text.replaceAll(from, to),
+              item,
+            )
+          : item,
+      ),
+    );
+  const historicSol = {
+    "us.openai.gpt-6-astra": "us.openai.gpt-6.1-sol",
+    "GPT-6 Astra": "GPT-6.1 Sol",
+  };
+  const historicFable = {
+    "us.anthropic.claude-opus-5-5": "us.anthropic.claude-fable-5-2",
+    "Claude Opus 5.5": "Claude Fable 5.2",
+  };
+  // Both rosters actually ran with the earlier 270/285-second policy.
+  const earlierLimits = {
+    model_timeout_ms: 270_000,
+    overall_timeout_ms: 285_000,
+  };
+  const blockedInputs: CouncilReport[] = [];
+  for (const { ids, labels, missingId } of [
+    {
+      ids: historicSol,
+      labels: ["GPT-6.1 Sol", "Claude Opus 5.5", "Grok 4.7"],
+      missingId: claudeId,
+    },
+    {
+      ids: historicFable,
+      labels: ["GPT-6 Astra", "Claude Fable 5.2", "Grok 4.7"],
+      missingId: "us.anthropic.claude-fable-5-2",
+    },
+  ]) {
+    const old = archivedCopy(current, ids);
+    Object.assign(old.execution, earlierLimits, {
+      policy_version: "bounded-review-v3-validation-recovery",
+      prompt_version:
+        "independent-review-v5-bounded-evidence-correction-grok-medium",
+    });
+    const historic = await validateCouncil(old, source);
+    const archivedSecond = archivedCopy(currentSecond, ids);
+    archivedSecond.policy_version = "targeted-peer-review-v5-extended-recovery";
+    archivedSecond.prompt_version =
+      "targeted-peer-review-v7-bounded-evidence-correction-grok-medium";
+    Object.assign(archivedSecond.execution, earlierLimits);
+    archivedSecond.baseline_sha256 = await secondReviewBaselineHash(
+      historic,
+      source,
+    );
+    const verified = await validateSecondReviewReport(
+      archivedSecond,
+      source,
+      historic,
+    );
+    expect(verified.findings[0].missing_models).toContain(missingId);
+    const final = buildFinalReviewReport(historic, verified);
+    expect(final.findings[0].judgments.map(({ label }) => label)).toEqual(
+      labels,
+    );
+    const markdown = await secondReviewMarkdown(historic, verified);
+    expect(markdown).toContain(
+      missingId === claudeId ? "Claude Opus 5" : "Claude Fable 5",
+    );
+    expect(markdown).not.toContain(
+      missingId === claudeId ? "GPT-6 Astra" : "Claude Opus",
+    );
+    expect(reviewStageAvailability(historic, null, false)).toMatchObject({
+      secondReviewAvailable: false,
+      finalReportAvailable: true,
+    });
+    expect(
+      reviewStageAvailability(historic, verified, false).secondReviewAvailable,
+    ).toBe(true);
+    blockedInputs.push(historic);
+  }
+  // Sol + Fable never formed a review council.
+  const mixed = archivedCopy(current, { ...historicSol, ...historicFable });
+  await expect(validateCouncil(mixed, source)).rejects.toThrow(/identity/);
+  blockedInputs.push(mixed);
+  let calls = 0;
+  for (const disallowed of blockedInputs) {
+    const result = await handleSecondReview(
+      request(disallowed),
+      async () => {
+        calls++;
+        throw new Error("Unexpected provider request");
+      },
+      createLimiter(),
+      fastTiming,
+    );
+    expect(result.status).toBe(400);
+    expect((await result.json()).code).toBe("invalid_baseline");
+  }
+  expect(calls).toBe(0);
 });

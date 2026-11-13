@@ -10,9 +10,9 @@ Documentation contains the eight-page platform overview and three-page orchestra
 
 ## Capabilities
 
-- Paste, edit or upload a single Solidity file, or explore five preserved reference contracts.
+- Paste, edit or upload a single Solidity file, or select one of the five preserved benchmark contracts or the supplemental **DAO Treasury** case.
 - Use **Static Analysis** for 15 on-device static heuristics without credentials or a backend. The model workflow is **Bedrock Review → Findings → Second Review → Final Report**.
-- Enter one Bedrock API key to run **GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7** concurrently. Each model reviews the same source independently.
+- Enter one Bedrock API key to run **GPT-6 Astra, Claude Opus 5.5 and Grok 4.7** concurrently. Each model reviews the same source independently.
 - Select **Run Bedrock Review**, inspect the first-round **Findings**, then explicitly select **Run Second Review** for eligible differences. The second round never starts automatically. Preserve the first-pass record and every later judgment.
 - Inspect one final report covering all original findings, including unanimous, unresolved, unreviewed and deferred claims, with first-round discoverers and second-round decisions clearly separated.
 - Consolidate findings by canonical weakness and source location, with distinct-model votes, proposed severity, disagreement indicators and links to the original findings.
@@ -42,11 +42,15 @@ Choose an example, upload a file or paste code. Select **Bedrock Review**, add a
 
 | Model | US inference profile |
 | --- | --- |
-| GPT-6.1 Sol | `us.openai.gpt-6.1-sol` |
+| GPT-6 Astra | `us.openai.gpt-6-astra` |
 | Claude Opus 5.5 | `us.anthropic.claude-opus-5-5` |
 | Grok 4.7 | `us.xai.grok-4.7` |
 
-Requests use Bedrock Converse through a same-origin Next.js server route. The first pass excludes static candidates and peer findings. The optional second pass assigns selected peer claims to successful reviewers that omitted them, plus severity-disputed claims to the successful reviewers. An empty assignment makes no model call. A failed first-pass model is not recovered by the follow-up: two completed assigned reviews still leave overall coverage at two of three. Static analysis remains a separate view and does not vote in consensus. Both rounds use model-selected source spans with application-resolved exact excerpts. The second-round native grammar uses twelve stable slots with explicit nulls for unused slots. Grok uses medium reasoning effort within unchanged execution budgets. Final Report leads with risk explanations and recommended actions; if reassessment fails, it retains valid original opinions and severity while marking that work pending. Retained evidence is not a new second-round vote.
+New reviews use Opus in both rounds. Earlier Fable and Sol reports keep their original model names and judgments. To request a new second round with the current models, start a fresh Bedrock Review.
+
+**Run the Treasury example:** Open **Reference cases → DAO Treasury**, then **Run Static Analysis** or **Run Bedrock Review**. Inspect Findings, run Second Review if differences are eligible, and open Final Report. The supplied source is reviewed as a single file; OpenZeppelin imports are not resolved. Zero findings is a valid result. This example is outside the five-case benchmark.
+
+Requests use Bedrock Converse through a same-origin Next.js server route. The first pass excludes static candidates and peer findings. The optional second pass assigns selected peer claims to successful reviewers that omitted them, plus severity-disputed claims to the successful reviewers. An empty assignment makes no model call. A failed first-pass model is not recovered by the follow-up: two completed assigned reviews still leave overall coverage at two of three. Static analysis remains a separate view and does not vote in consensus. Both rounds use model-selected source spans with application-resolved exact excerpts. The second-round native grammar uses twelve stable slots with explicit nulls for unused slots. Grok uses medium reasoning effort. An explicit output-token stop can trigger one new generation with a larger allowance; no truncated findings are accepted. Final Report leads with risk explanations and recommended actions; if reassessment fails, it retains valid original opinions and severity while marking that work pending. Retained evidence is not a new second-round vote.
 
 Failure messages distinguish invalid credentials, permissions, service errors, rejected output and provider filtering. A `content_filtered` or `guardrail_intervened` result is terminal: the app does not retry or rewrite the input to get around it. Accepted peer results remain available. See [troubleshooting](docs/BEDROCK.md#troubleshooting). Prompt comparisons and five-case evaluation are under **Review settings**.
 
@@ -64,7 +68,7 @@ Keys stay in the current tab's memory and active server request. Refresh or **Cl
 | Functions | Fluid compute; 300-second route duration |
 | AWS environment variables | None required; visitors supply their own keys |
 
-The browser never calls a visitor's localhost. Each model has a 270-second deadline, with a 285-second server deadline, a 295-second browser wait and a 300-second function duration. Each model may make up to three attempts within its original deadline. Selected service/connection errors and a remote Bedrock `ModelTimeoutException` can be retried. In either round, a locally rejected format or evidence response can use the same remaining attempts for a complete corrected generation with safe constraints. These paths share the three-attempt total; successful reviews are not rerun. Provider-directed waits must fit the remaining deadline. Each pass makes at most nine provider requests; two review rounds make at most eighteen. The passes use separate server requests. Second-round output uses required named answer slots, validated before the server binds each answer to its assigned claim. See [deployment](docs/DEPLOYMENT.md).
+Each model gets up to three attempts per round. Locally, one model can run for 660 seconds within a 720-second round. On Vercel the review uses shorter deadlines to fit a 300-second function. Each request starts with 32,768 output tokens; if Bedrock explicitly reports `max_tokens`, only that model can retry at 65,536 within its remaining attempts and time. A second truncation at the ceiling is terminal. Valid reviews are retained. See [deployment](docs/DEPLOYMENT.md) for the differences between local and hosted execution.
 
 ## Verification
 

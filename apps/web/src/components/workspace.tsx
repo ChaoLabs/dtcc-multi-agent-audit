@@ -1,5 +1,6 @@
 "use client";
 
+import { readCouncilJson, reviewHeaders } from "@/lib/review-http";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
@@ -31,7 +32,11 @@ import { EvaluationPanel } from "./evaluation-panel";
 import { SecondReviewPanel } from "./second-review-panel";
 import { FinalReportPanel } from "./final-report-panel";
 import { analyzeStatic, validateInput } from "@/lib/static-analysis";
-import { BEDROCK_MODELS, validateApiKey } from "@/lib/bedrock-config";
+import {
+  BEDROCK_MODELS,
+  recordedCouncil,
+  validateApiKey,
+} from "@/lib/bedrock-config";
 import { Icon } from "./icons";
 import { CodeView } from "./code-view";
 import { CouncilStatus, ConsensusEvidence } from "./review-council";
@@ -88,6 +93,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
   const [focused, setFocused] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [missingReview, setMissingReview] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(
     cases[0].report.candidates[0]?.id ?? null,
   );
@@ -175,7 +181,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     validCouncil?.models.filter((item) => item.status === "succeeded").length ??
     0;
   async function exportReport(format: "json" | "md") {
-    if (!validReport) return;
+    if (!validReport || (showConsensus && !validCouncil)) return;
     try {
       if (validCouncil && stages.finalReportAvailable)
         await downloadFinalReviewReport(
@@ -237,6 +243,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     setBusy(false);
     setReport(null);
     setCouncil(null);
+    setMissingReview(false);
     setError("");
     setElapsed(null);
     setCopied(false);
@@ -339,6 +346,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     resetSecondReview();
     setPromptVariant(next);
     setCouncil(null);
+    setMissingReview(false);
     setReviewQueueOnly(false);
     setElapsed(null);
     setError("");
@@ -397,6 +405,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
       isCurrent: () => boolean;
     }) => {
       if (
+        recordedCouncil(baseline.models) !== BEDROCK_MODELS ||
         secondAttemptedRef.current ||
         secondAdmissions.current >= 2 ||
         secondRequest.current ||
@@ -501,6 +510,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
     setQuery("");
     const start = performance.now();
     const timer = setTimeout(() => abort.abort(), REVIEW_CLIENT_TIMEOUT_MS);
+    let requestedCouncil = false;
     try {
       const baseline = await analyzeStatic(snapshot.filename, snapshot.source);
       if (!isCurrent()) return;
@@ -508,9 +518,10 @@ export default function Workspace({ cases }: { cases: Case[] }) {
       setExpanded(baseline.candidates[0]?.id ?? null);
       setEditing(false);
       if (mode === "api") {
+        requestedCouncil = true;
         const response = await fetch("/api/reviews", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: reviewHeaders,
           body: JSON.stringify({
             ...snapshot,
             api_key: key,
@@ -522,12 +533,14 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           redirect: "error",
         });
         if (!isCurrent()) return;
-        const value = await response.json().catch(() => null);
+        const value = await readCouncilJson(response, abort.signal);
         if (!response.ok) {
-          if (value?.code === "bedrock_access") setVerified(false);
+          const failure = value && typeof value === "object" ? value : {};
+          if ("code" in failure && failure.code === "bedrock_access")
+            setVerified(false);
           throw new Error(
-            typeof value?.detail === "string"
-              ? value.detail
+            "detail" in failure && typeof failure.detail === "string"
+              ? failure.detail
               : `Bedrock Review failed (HTTP ${response.status}).`,
           );
         }
@@ -558,7 +571,8 @@ export default function Workspace({ cases }: { cases: Case[] }) {
       if (isCurrent() && mode === "static")
         setElapsed(Math.round(performance.now() - start));
     } catch (cause) {
-      if (stamp === version.current && mounted.current)
+      if (stamp === version.current && mounted.current) {
+        setMissingReview(requestedCouncil);
         setError(
           cause instanceof TypeError
             ? "Cannot reach the analysis service. Check your connection and retry."
@@ -568,6 +582,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                 ? cause.message
                 : "Analysis failed.",
         );
+      }
     } finally {
       clearTimeout(timer);
       lease.finish();
@@ -768,6 +783,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
           {mode === "api" && (
             <CouncilStatus
               report={validCouncil}
+              missingReport={missingReview}
               busy={busy}
               hasKey={hasKey}
               onConnect={() => apiDialog.current?.showModal()}
@@ -930,7 +946,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                     className="icon-button"
                     aria-label="Download JSON report"
                     title="Download JSON"
-                    disabled={!validReport}
+                    disabled={!validReport || (showConsensus && !validCouncil)}
                     onClick={() => exportReport("json")}
                   >
                     <span>JSON</span>
@@ -940,7 +956,7 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                     className="icon-button"
                     aria-label="Download Markdown report"
                     title="Download Markdown"
-                    disabled={!validReport}
+                    disabled={!validReport || (showConsensus && !validCouncil)}
                     onClick={() => exportReport("md")}
                   >
                     <span>MD</span>
@@ -1147,7 +1163,10 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                               "few-shot"
                                 ? "Guided examples"
                                 : "Standard prompt"}{" "}
-                              · {validCouncil.execution.total_attempts} / 6
+                              · {validCouncil.execution.total_attempts} /{" "}
+                              {validCouncil.models.length *
+                                validCouncil.execution
+                                  .max_attempts_per_model}{" "}
                               attempts used · {reviewQueue.length} findings in
                               the review queue.
                             </p>
@@ -1228,15 +1247,36 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                   <>
                     {showConsensus && !validCouncil && !busy ? (
                       <div className="empty-state">
-                        <span className="mini-label">
-                          THREE INDEPENDENT PERSPECTIVES
-                        </span>
-                        <h3>Ready for Bedrock Review</h3>
-                        <p>
-                          Select Run Bedrock Review to analyze this contract
-                          with three models. Review the findings before starting
-                          Second Review.
-                        </p>
+                        {missingReview ? (
+                          <>
+                            <h3>No Bedrock report available</h3>
+                            <p>
+                              Select Run Bedrock Review to start a new review,
+                              or view the static findings for this contract.
+                            </p>
+                            {validReport && (
+                              <button
+                                className="quiet-button"
+                                onClick={() => changeResultView("static")}
+                              >
+                                View Static Analysis{" "}
+                                <Icon name="arrow" size={14} />
+                              </button>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <span className="mini-label">
+                              THREE INDEPENDENT PERSPECTIVES
+                            </span>
+                            <h3>Ready for Bedrock Review</h3>
+                            <p>
+                              Select Run Bedrock Review to analyze this contract
+                              with three models. Review the findings before
+                              starting Second Review.
+                            </p>
+                          </>
+                        )}
                       </div>
                     ) : showConsensus && validCouncil?.status === "failed" ? (
                       <div className="empty-state">
@@ -1443,7 +1483,9 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                             : validCouncil.status === "partial"
                               ? "Results available · incomplete model coverage"
                               : "Model review failed"
-                          : "Awaiting model review"
+                          : missingReview
+                            ? "No validated model report"
+                            : "Awaiting model review"
                         : validReport
                           ? validReport.execution === "recorded"
                             ? "Reference findings"
@@ -1518,7 +1560,9 @@ export default function Workspace({ cases }: { cases: Case[] }) {
             <p>
               {validCouncil
                 ? `${completedModels} of ${BEDROCK_MODELS.length} model reviews completed, with an independent static baseline. Findings remain candidates for human review.`
-                : "15 static pattern rules. No compilation or model analysis has run for this report."}
+                : missingReview
+                  ? "Only the static baseline is available. No validated model results were received."
+                  : "15 static pattern rules. No compilation or model analysis has run for this report."}
             </p>
             <p>
               Matching a source location does not prove exploitability. No
@@ -1612,7 +1656,10 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                           <dt>Second review</dt>
                           <dd>
                             {secondReview.status} ·{" "}
-                            {secondReview.execution.total_attempts} / 6
+                            {secondReview.execution.total_attempts} /{" "}
+                            {secondReview.plan.model_ids.length *
+                              secondReview.execution
+                                .max_attempts_per_model}{" "}
                             additional attempts
                           </dd>
                         </div>
@@ -1670,9 +1717,10 @@ export default function Workspace({ cases }: { cases: Case[] }) {
               <div>
                 <h3>Add model reasoning</h3>
                 <p>
-                  GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7 review the same
-                  source independently through AWS Bedrock. Static findings
-                  remain a separate baseline.
+                  {BEDROCK_MODELS[0].label}, {BEDROCK_MODELS[1].label} and{" "}
+                  {BEDROCK_MODELS[2].label} review the same source independently
+                  through AWS Bedrock. Static findings remain a separate
+                  baseline.
                 </p>
               </div>
             </li>
@@ -1685,9 +1733,8 @@ export default function Workspace({ cases }: { cases: Case[] }) {
                   groups related findings, and preserves each model&apos;s
                   reasoning. Agreement counts distinct models, not confidence in
                   correctness. Missing models and severity disagreements remain
-                  visible in a review queue. A bounded controller permits one
-                  retry for a transient service response and stops at the model
-                  or run deadline.
+                  visible in a review queue. Only the affected model retries a
+                  recoverable failure, within the request and time limits.
                 </p>
               </div>
             </li>
@@ -1789,6 +1836,16 @@ export default function Workspace({ cases }: { cases: Case[] }) {
             One Bedrock key authorizes all three model requests. Your AWS
             account must have access to each model. API analysis sends your key
             and source through this site&apos;s server to AWS.
+          </p>
+          <p>
+            Use Static Analysis to keep source on this device.{" "}
+            <a
+              href="https://docs.aws.amazon.com/bedrock/latest/userguide/data-retention.html"
+              target="_blank"
+              rel="noreferrer"
+            >
+              AWS data retention policy
+            </a>
           </p>
           <form
             className="connection-form"

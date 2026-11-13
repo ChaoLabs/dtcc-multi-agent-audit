@@ -252,7 +252,7 @@ for i, (kicker, title, body, detail) in enumerate(
         (
             "BEDROCK REVIEW",
             "Run Bedrock Review",
-            "Three parallel model reviews, using one Bedrock key:<br/>GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7.",
+            "Three parallel model reviews, using one Bedrock key:<br/>GPT-6 Astra, Claude Opus 5.5 and Grok 4.7.",
             "Inspect Findings first. Open Second Review and select Run Second Review for eligible claims; it can add up to nine calls.",
         ),
     ]
@@ -322,7 +322,7 @@ centers = [M + i * (model_w + 16) + model_w / 2 for i in range(3)]
 connector([(W / 2, 221), (W / 2, 235)])
 connector([(centers[0], 235), (centers[2], 235)])
 for i, (name, provider) in enumerate(
-    [("GPT-6.1 Sol", "OPENAI"), ("Claude Opus 5.5", "ANTHROPIC"), ("Grok 4.7", "XAI")]
+    [("GPT-6 Astra", "OPENAI"), ("Claude Opus 5.5", "ANTHROPIC"), ("Grok 4.7", "XAI")]
 ):
     x = M + i * (model_w + 16)
     connector([(centers[i], 235), (centers[i], 247)], arrow=True)
@@ -642,12 +642,12 @@ for i, (value, title, detail) in enumerate(
         (
             "3 attempts",
             "PER MODEL / PASS, MAXIMUM",
-            "Shared by temporary-error recovery and format or evidence correction in either round.",
+            "Shared by service retries, output-limit recovery and evidence correction.",
         ),
         (
-            "270 seconds",
-            "PER MODEL / PASS, ABSOLUTE",
-            "285 seconds per server request. Retries never reset the deadline.",
+            "11 minutes",
+            "LOCAL MODEL DEADLINE",
+            "12 minutes per round locally. Vercel uses a shorter hosting budget.",
         ),
         (
             "90 calls",
@@ -689,7 +689,7 @@ for i, (title, body) in enumerate(
     [
         (
             "01  Fix the conditions",
-            "Open Review settings. Choose the prompt and batch review setting; keep the five sources unchanged.",
+            "Keep the five benchmark sources fixed. DAO Treasury is a separate case with no preset finding count.",
         ),
         (
             "02  Run sequentially",
@@ -749,7 +749,7 @@ for i, (title, body) in enumerate(
     [
         (
             "Prepare your source",
-            "Open a reference case, upload one .sol file or edit the source directly.",
+            "Select DAO Treasury under Reference cases, upload one .sol file or edit the source.",
         ),
         (
             "Connect Bedrock",
@@ -785,7 +785,7 @@ for i, (status, detail) in enumerate(
     text(detail, rx + 90, y, col - 90, 10, MUTED, leading=14)
     rule(y + 39, rx, col)
 text(
-    "Your key stays in this tab's memory and in server-request memory. API analysis sends the source and key through the site's server to AWS; your account's permissions and usage charges apply.",
+    "If a model exhausts its output budget, its partial response is discarded. One retry can raise its allowance from 32,768 to 65,536 tokens.",
     rx,
     354,
     col,

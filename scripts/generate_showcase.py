@@ -43,18 +43,21 @@ def browser_catalog():
     return dict(sorted(catalog.items()))
 
 
-def generate(check: bool = False):
-    manifest = json.loads((ROOT / "evaluations/cases.json").read_text())
-    existing = json.loads((GENERATED / "cases.json").read_text()) if check else []
+def case_reports(name: str, fixture_group: str, *, benchmark: bool, check: bool):
+    manifest = json.loads((ROOT / "evaluations" / name).read_text())
+    existing = json.loads((GENERATED / name).read_text()) if check else []
     artifacts = []
     for index, case in enumerate(manifest):
         source = (
-            (ROOT / "contracts/fixtures/originals" / case["filename"]).read_bytes().decode("utf-8")
+            (ROOT / "contracts/fixtures" / fixture_group / case["filename"])
+            .read_bytes()
+            .decode("utf-8")
         )
         report = analyze(AuditInput(filename=case["filename"], source=source), execution="recorded")
-        actual_rules = {candidate.rule_id for candidate in report.candidates}
-        if not set(case["expected_rules"]) <= actual_rules:
-            raise AssertionError(f"Regression in {case['id']}: expected title coverage changed")
+        if benchmark:
+            actual_rules = {candidate.rule_id for candidate in report.candidates}
+            if not set(case["expected_rules"]) <= actual_rules:
+                raise AssertionError(f"Regression in {case['id']}: expected title coverage changed")
         if check:
             saved = AuditReport.model_validate(existing[index]["report"])
             report.run_id = saved.run_id
@@ -63,6 +66,16 @@ def generate(check: bool = False):
             {key: case[key] for key in ("id", "title", "summary", "caveat")}
             | {"report": report.model_dump(mode="json")}
         )
+    if check:
+        assert artifacts == existing, f"{name} snapshots are stale: regenerate deliberately"
+    return artifacts
+
+
+def generate(check: bool = False):
+    cases = case_reports("cases.json", "originals", benchmark=True, check=check)
+    supplemental = case_reports(
+        "supplemental-cases.json", "supplemental", benchmark=False, check=check
+    )
     schema = AuditReport.model_json_schema(mode="serialization")
     extras = {
         "review.schema.json": EnhancedReport.model_json_schema(mode="serialization"),
@@ -71,7 +84,6 @@ def generate(check: bool = False):
     if check:
         for name, value in extras.items():
             assert json.loads((GENERATED / name).read_text()) == value, f"Stale {name}"
-        assert artifacts == existing, "Showcase snapshots are stale: regenerate deliberately"
         assert schema == json.loads((GENERATED / "report.schema.json").read_text()), (
             "Schema is stale"
         )
@@ -79,12 +91,13 @@ def generate(check: bool = False):
     else:
         GENERATED.mkdir(parents=True, exist_ok=True)
         for name, value in [
-            ("cases.json", artifacts),
+            ("cases.json", cases),
+            ("supplemental-cases.json", supplemental),
             ("report.schema.json", schema),
             *extras.items(),
         ]:
             (GENERATED / name).write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
-        print(f"Generated {len(artifacts)} actual static reports and JSON Schema.")
+        print(f"Generated {len(cases) + len(supplemental)} actual static reports and JSON Schema.")
 
 
 if __name__ == "__main__":

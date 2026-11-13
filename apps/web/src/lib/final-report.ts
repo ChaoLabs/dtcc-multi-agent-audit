@@ -1,5 +1,4 @@
 import type { ReviewFinding } from "@/generated/review";
-import { BEDROCK_MODELS } from "@/lib/bedrock-config";
 import type { CouncilReport } from "@/lib/orchestration";
 import {
   assignedSecondReviewCandidates,
@@ -120,10 +119,9 @@ export function buildFinalReviewReport(
       finding.agreement < 3;
     const deferred = review?.plan.deferred_ids.includes(finding.id) ?? false;
     const selected = review?.plan.candidate_ids.includes(finding.id) ?? false;
-    const judgments = BEDROCK_MODELS.map((config): FinalModelJudgment => {
-      const run = baseline.models.find((item) => item.model_id === config.id)!;
+    const judgments = baseline.models.map((run): FinalModelJudgment => {
       const members = finding.members.filter(
-        (item) => item.model_id === config.id,
+        (item) => item.model_id === run.model_id,
       );
       const original = members.map(
         (member) => run.review!.findings[member.finding_index],
@@ -143,12 +141,12 @@ export function buildFinalReviewReport(
             ? "reported"
             : "not_reported";
       const assigned = review
-        ? assignedSecondReviewCandidates(review.plan, config.id).includes(
+        ? assignedSecondReviewCandidates(review.plan, run.model_id).includes(
             finding.id,
           )
         : false;
       const secondRun = review?.models.find(
-        (item) => item.model_id === config.id,
+        (item) => item.model_id === run.model_id,
       );
       const assessment = secondRun?.review?.assessments.find(
         (item) => item.finding_id === finding.id,
@@ -170,8 +168,8 @@ export function buildFinalReviewReport(
           ? "first_round"
           : "none";
       return {
-        model_id: config.id,
-        label: config.label,
+        model_id: run.model_id,
+        label: run.label,
         first_round,
         second_round,
         effective_verdict,

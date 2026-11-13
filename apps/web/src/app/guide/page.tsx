@@ -76,7 +76,9 @@ export default function GuidePage() {
             <p>
               The input limit is 48,000 UTF-8 bytes, 1,200 lines and 2,000
               characters per line. Imports are not resolved and source is not
-              compiled.
+              compiled. For the separate DAO example, open{" "}
+              <strong>Reference cases → DAO Treasury</strong>. Zero findings is
+              a valid result; the five-case validation set stays unchanged.
             </p>
           </div>
         </section>
@@ -103,7 +105,7 @@ export default function GuidePage() {
             <dl className="guide-definitions">
               <div>
                 <dt>Models</dt>
-                <dd>GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7.</dd>
+                <dd>GPT-6 Astra, Claude Opus 5.5 and Grok 4.7.</dd>
               </div>
               <div>
                 <dt>Region</dt>
@@ -130,11 +132,14 @@ export default function GuidePage() {
             <aside>
               API analysis sends your key and source through this site&apos;s
               server to AWS. Your AWS account&apos;s model permissions, logging
-              settings and usage charges apply. Each model reviews the source
-              independently in the first round, without seeing static findings
-              or peer results. An explicitly started second round can add up to
-              nine model calls and shares selected peer claims for reassessment.
-              Adding a key or changing modes does not start paid analysis.
+              settings and usage charges apply. Only submit source you are
+              authorized to send. New reviews use Claude Opus 5.5; historical
+              reports keep their original model identities. Each model reviews
+              the source independently in the first round, without seeing static
+              findings or peer results. An explicitly started second round can
+              add up to nine model calls and shares selected peer claims for
+              reassessment. Adding a key or changing modes does not start paid
+              analysis.
             </aside>
             <p>
               The application holds your key only in this tab&apos;s memory and
@@ -228,13 +233,12 @@ export default function GuidePage() {
               earlier position. The original independent report stays unchanged.
             </p>
             <p>
-              Each stage allows at most three attempts per model within 270
-              seconds, with a 285-second server deadline. Both stages together
-              allow at most eighteen provider calls. Selected temporary errors
-              and remote model timeouts can use a remaining attempt. Either
-              round can also request a complete corrected response after local
-              format or evidence rejection. These recoveries share the same
-              attempt budget and never reset a deadline. The new response must
+              Each stage allows three attempts per model and up to nine calls. A
+              model that runs out of output tokens can try once with twice the
+              allowance (32,768 to 65,536 tokens). The incomplete response is
+              discarded. Temporary service failures and invalid evidence share
+              the same attempt budget. Local reviews allow up to 11 minutes per
+              model; the hosted site uses a shorter limit. The new response must
               pass all checks; no evidence is invented. Invalid access, blocked
               content and cancellation are not retried. Cancel or failure
               preserves accepted initial results. Closing the panel lets work

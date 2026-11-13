@@ -20,8 +20,12 @@ npm --prefix apps/web run dev
 1. 选择参考案例、点击 **Upload contract** 上传合约，或在 **Edit source** 中粘贴代码，再选择 **Bedrock Review**。
 2. 粘贴完整有效的 Bedrock API Key，不含 `export` 命令或引号。
 3. 点击 **Use API key**，再点击 **Run Bedrock Review**。完成后先查看 **Findings**，不会自动进入第二轮。
-4. 打开 **Second Review**，检查分配的复核任务，再点击 **Run Second Review**。收到有效的第二轮报告后点击 **View Final Report** 直接打开最终报告；部分有效结果也可进入最终报告。若没有可执行的复核任务，页面会说明原因。取消或请求失败不会被算作已完成第二轮，初轮结果和导出仍保留。区域为 `us-east-1`，三个固定模型为 GPT-6.1 Sol、Claude Opus 5.5 和 Grok 4.7，账户须具备对应调用权限。
+4. 打开 **Second Review**，检查分配的复核任务，再点击 **Run Second Review**。收到有效的第二轮报告后点击 **View Final Report** 直接打开最终报告；部分有效结果也可进入最终报告。若没有可执行的复核任务，页面会说明原因。取消或请求失败不会被算作已完成第二轮，初轮结果和导出仍保留。区域为 `us-east-1`，三个固定模型为 GPT-6 Astra、Claude Opus 5.5 和 Grok 4.7，账户须具备对应调用权限。若此前用 Fable 5.2 运行过，请重新发起初轮分析。旧报告保留原模型身份，不能在同一报告里换人投票。
+
+要测试 Muxiang 提供的合约，在 **Reference cases** 中选 **DAO Treasury**，然后运行 **Static Analysis** 或 **Bedrock Review**。只有出现可复核的分歧时才运行 **Second Review**，最后查看 **Final Report**。零条发现是有效结果，不代表没有风险；这个补充案例不计入原有五例基准。
 5. Key 仅保留在当前标签页内存及当前服务端请求中。刷新页面或点击 **Clear key** 后需要重新输入。应用不会写入浏览器存储、Cookie、日志或仓库。
+
+若显示 Response too long，新版本会在明确收到输出上限信号时，仅对该模型尝试一次扩容：32,768 → 65,536 tokens。它仍受三次总尝试和本轮时限约束；缺失结果不会计票。
 
 添加 Key 只验证格式，成功返回模型分析才说明 AWS 调用成功。分析时 Key 与源码经本站服务端发往 AWS；模型费用归 Key 所属 AWS 账户，Vercel 运行费用归部署账户。不要分享包含 Key 或请求正文的截图。
 

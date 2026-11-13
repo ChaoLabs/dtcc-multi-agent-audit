@@ -1,0 +1,101 @@
+[
+  {
+    "id": "dao-treasury",
+    "title": "DAO Treasury",
+    "summary": "An owner-managed treasury that holds and transfers tokens and Ether. Supplemental review case.",
+    "caveat": "Previously audited according to the contributor. No expected findings are supplied. This review covers the submitted file, not the imported OpenZeppelin implementations.",
+    "report": {
+      "schema_version": "1.0.0",
+      "run_id": "10eb272b-a115-418f-9d9c-a9f52af9b3fb",
+      "created_at": "2026-11-13T00:24:38.087106+00:00",
+      "execution": "recorded",
+      "mode": "static",
+      "engine": "legacy-static-rules",
+      "engine_version": "0.1.1",
+      "source_sha256": "94032a8f709a1b543ed0f3abaeab90b0219a64eb16e360bc2d2d293c2bbcbfb2",
+      "input": {
+        "filename": "muxiang_dao_treasury.sol",
+        "source": "//SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport { Ownable } from \"@openzeppelin/contracts/access/Ownable.sol\";\nimport { IERC20 } from \"@openzeppelin/contracts/token/ERC20/IERC20.sol\";\nimport { SafeERC20 } from \"@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol\";\nimport { Address } from \"@openzeppelin/contracts/utils/Address.sol\";\n\ncontract Treasury is Ownable {\n    using Address for address;\n    using Address for address payable;\n    using SafeERC20 for IERC20;\n\n    mapping(IERC20 => bool) private whitelistedTokens;\n\n    constructor(address[] memory whitelist_) Ownable(msg.sender) {\n        for (uint256 i = 0; i < whitelist_.length; i++) {\n            whitelistedTokens[IERC20(whitelist_[i])] = true;\n        }\n    }\n\n    modifier onlyWhitelistedToken(IERC20 _token) {\n        require(whitelistedTokens[_token], \"Token is not whitelisted\");\n        _;\n    }\n\n    receive() external payable {}\n\n    function tokenTransfer(\n        IERC20 _token,\n        address _to,\n        uint256 _amount\n    ) external onlyOwner onlyWhitelistedToken(_token) {\n        _tokenTransfer(_token, _to, _amount);\n    }\n\n    function tokenTransferWithCall(\n        IERC20 _token,\n        address _contract,\n        uint256 _amount,\n        bytes memory _data\n    ) external onlyOwner onlyWhitelistedToken(_token) {\n        _tokenTransfer(_token, _contract, _amount);\n        _contract.functionCall(_data);\n    }\n\n    function nativeTransfer(address payable _to, uint256 _amount)\n        external\n        onlyOwner\n    {\n        _nativeTransfer(_to, _amount);\n    }\n\n    function nativeTransferWithCall(\n        address payable _contract,\n        uint256 _amount,\n        bytes memory _data\n    ) external onlyOwner {\n        _nativeTransfer(_contract, _amount);\n        _contract.functionCall(_data);\n    }\n\n    function _tokenTransfer(\n        IERC20 _token,\n        address _to,\n        uint256 _amount\n    ) internal {\n        require(\n            _token.balanceOf(address(this)) >= _amount,\n            \"Insufficient funds\"\n        );\n        _token.safeTransfer(_to, _amount);\n    }\n\n    function _nativeTransfer(address payable _to, uint256 _amount) internal {\n        require(address(this).balance >= _amount, \"Insufficient funds\");\n        _to.transfer(_amount);\n    }\n\n    function whitelistTokens(IERC20[] calldata _tokens) external onlyOwner {\n        for (uint256 i = 0; i < _tokens.length; i++) {\n            whitelistedTokens[_tokens[i]] = true;\n        }\n    }\n\n    function removeWhitelisted(IERC20[] calldata _tokens) external onlyOwner {\n        for (uint256 i = 0; i < _tokens.length; i++) {\n            delete whitelistedTokens[_tokens[i]];\n        }\n    }\n\n    function isTokenWhitelisted(IERC20 _token) public view returns (bool) {\n        return whitelistedTokens[_token];\n    }\n\n    function balanceOf(IERC20 _token) public view returns (uint256) {\n        return _token.balanceOf(address(this));\n    }\n\n    function nativeBalance() public view returns (uint256) {\n        return address(this).balance;\n    }\n}\n"
+      },
+      "candidates": [
+        {
+          "id": "53dfed1377dc7c9ca67ed321",
+          "rule_id": "SC-015",
+          "title": "Potential unbounded iteration",
+          "category": "Availability",
+          "proposed_severity": "MEDIUM",
+          "disposition": "needs-review",
+          "rationale": "function 'constructor' contains a potentially unbounded loop",
+          "recommendation": "Bound iteration counts, paginate work, or use pull-based processing.",
+          "evidence": {
+            "line_start": 17,
+            "line_end": 17,
+            "excerpt": "        for (uint256 i = 0; i < whitelist_.length; i++) {",
+            "validation": "source-bound"
+          },
+          "origin": "legacy-static-rules"
+        },
+        {
+          "id": "1dedfd4e723a786097935b02",
+          "rule_id": "SC-015",
+          "title": "Potential unbounded iteration",
+          "category": "Availability",
+          "proposed_severity": "MEDIUM",
+          "disposition": "needs-review",
+          "rationale": "function 'whitelistTokens' contains a potentially unbounded loop",
+          "recommendation": "Bound iteration counts, paginate work, or use pull-based processing.",
+          "evidence": {
+            "line_start": 81,
+            "line_end": 81,
+            "excerpt": "        for (uint256 i = 0; i < _tokens.length; i++) {",
+            "validation": "source-bound"
+          },
+          "origin": "legacy-static-rules"
+        },
+        {
+          "id": "8eb789140b3adf35a0e9e4c3",
+          "rule_id": "SC-015",
+          "title": "Potential unbounded iteration",
+          "category": "Availability",
+          "proposed_severity": "MEDIUM",
+          "disposition": "needs-review",
+          "rationale": "function 'removeWhitelisted' contains a potentially unbounded loop",
+          "recommendation": "Bound iteration counts, paginate work, or use pull-based processing.",
+          "evidence": {
+            "line_start": 87,
+            "line_end": 87,
+            "excerpt": "        for (uint256 i = 0; i < _tokens.length; i++) {",
+            "validation": "source-bound"
+          },
+          "origin": "legacy-static-rules"
+        }
+      ],
+      "stages": [
+        {
+          "name": "Static rules",
+          "status": "completed"
+        },
+        {
+          "name": "Three-model analysis",
+          "status": "not-implemented"
+        },
+        {
+          "name": "Orchestration",
+          "status": "not-implemented"
+        },
+        {
+          "name": "Human review",
+          "status": "not-performed"
+        }
+      ],
+      "limitations": [
+        "Regex baseline only: source has not been compiled; imports and dependencies are not resolved.",
+        "Source-bound evidence proves a location, not exploitability or semantic correctness.",
+        "Comments and quoted literals are masked; formatting, naming and scope heuristics remain limited.",
+        "All candidates need human review. No findings does not mean the contract is safe.",
+        "No Bedrock model, multi-agent orchestration, Slither, bytecode or on-chain state analysis ran.",
+        "Severity is a rule-level proposal, not a calibrated probability, loss estimate or risk score."
+      ]
+    }
+  }
+]

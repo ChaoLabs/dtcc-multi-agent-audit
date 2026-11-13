@@ -1,9 +1,11 @@
+import { deliverReview } from "@/server/review-heartbeat";
 import { handleSecondReview } from "@/server/second-review";
+import { fetchBedrock } from "@/server/bedrock-fetch";
 
 export const runtime = "nodejs";
 // Leave response-finalization headroom beyond the server round deadline.
 export const maxDuration = 300;
 
 export async function POST(request: Request) {
-  return handleSecondReview(request);
+  return deliverReview(request, handleSecondReview, fetchBedrock);
 }

@@ -4,6 +4,7 @@ import { maxDuration as secondRouteDuration } from "../src/app/api/reviews/secon
 import {
   REVIEW_CLIENT_TIMEOUT_MS,
   REVIEW_POLICY,
+  reviewDeadlines,
 } from "../src/lib/review-policy";
 import { requestSecondReview } from "../src/lib/second-review-client";
 import { EVALUATION_CASES, runEvaluation } from "../src/lib/evaluation";
@@ -61,18 +62,26 @@ function applicationClock() {
   };
 }
 
-test("both routes leave finalization and browser headroom inside the 300-second deployment cap", () => {
-  expect(REVIEW_POLICY.model_timeout_ms).toBe(270_000);
-  expect(REVIEW_POLICY.overall_timeout_ms).toBeGreaterThan(
-    REVIEW_POLICY.model_timeout_ms,
-  );
-  expect(REVIEW_CLIENT_TIMEOUT_MS).toBeGreaterThan(
-    REVIEW_POLICY.overall_timeout_ms,
-  );
-  for (const limit of [firstRouteDuration, secondRouteDuration]) {
-    expect(limit).toBe(300);
-    expect(REVIEW_CLIENT_TIMEOUT_MS).toBeLessThan(limit * 1000);
+test("hosted deadlines fit both route limits; local reviews have a twelve-minute round", () => {
+  const hosted = reviewDeadlines(true);
+  const local = reviewDeadlines(false);
+  expect(local).toEqual({
+    model_timeout_ms: 660_000,
+    overall_timeout_ms: 720_000,
+    client_ms: 745_000,
+  });
+  for (const profile of [hosted, local]) {
+    expect(profile.model_timeout_ms).toBeLessThan(profile.overall_timeout_ms);
+    expect(profile.overall_timeout_ms).toBeLessThan(profile.client_ms);
   }
+  for (const seconds of [firstRouteDuration, secondRouteDuration]) {
+    expect(seconds).toBe(300);
+    expect(hosted.client_ms).toBeLessThan(seconds * 1000);
+  }
+  expect(REVIEW_POLICY.model_timeout_ms).toBe(
+    reviewDeadlines(process.env.NEXT_PUBLIC_REVIEW_HOST === "vercel")
+      .model_timeout_ms,
+  );
 });
 
 test("a delayed valid second review survives the former browser cutoff without another request", async () => {
@@ -98,7 +107,7 @@ test("a delayed valid second review survives the former browser cutoff without a
         });
       },
     });
-    clock.advance(250_000);
+    clock.advance(REVIEW_CLIENT_TIMEOUT_MS - 1_000);
     expect(requestSignal.aborted).toBe(false);
     finish(Response.json(result));
     expect((await response).status).toBe("completed");
@@ -151,7 +160,7 @@ for (const paired of [false, true]) {
           calls++;
           const body = JSON.parse(String(init!.body));
           expect(init!.signal!.aborted).toBe(false);
-          clock.advance(250_000);
+          clock.advance(REVIEW_CLIENT_TIMEOUT_MS - 1_000);
           expect(init!.signal!.aborted).toBe(false);
           return Response.json(
             url === "/api/reviews"

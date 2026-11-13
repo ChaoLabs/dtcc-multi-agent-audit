@@ -1,9 +1,11 @@
+import { readCouncilJson, reviewHeaders } from "@/lib/review-http";
 import cases from "@/generated/cases.json";
 import { validateApiKey } from "@/lib/bedrock-config";
 import { validateCouncil, type CouncilReport } from "@/lib/orchestration";
 import {
   PROMPT_VERSION,
   REVIEW_CLIENT_TIMEOUT_MS,
+  reviewDeadlines,
   type PromptVariant,
   type IndependentPromptVersion,
 } from "@/lib/review-policy";
@@ -205,8 +207,12 @@ export function evaluationMetrics(
   };
 }
 
-/** One explicit experiment = five sequential requests, never an outer retry.
- * Each request invokes at most six provider attempts under the server policy.
+function evaluationDeadline(paired: boolean, clientMs: number) {
+  return EVALUATION_CASES.length * (paired ? 2 : 1) * clientMs + 30_000;
+}
+
+/** One explicit experiment = five sequential cases, never an outer retry.
+ * Each round shares the supervisor's bounded provider budget.
  * Credentials never enter progress snapshots or the returned export.
  */
 export async function runEvaluation({
@@ -235,10 +241,7 @@ export async function runEvaluation({
     throw new Error("Choose a supported review mode.");
   const timer = setTimeout(
     () => deadline.abort(),
-    EVALUATION_CASES.length *
-      (includeSecondReview ? 2 : 1) *
-      REVIEW_CLIENT_TIMEOUT_MS +
-      30_000,
+    evaluationDeadline(includeSecondReview, REVIEW_CLIENT_TIMEOUT_MS),
   );
   const batchSignal = AbortSignal.any([signal, deadline.signal]);
   const result: EvaluationReport = {
@@ -292,7 +295,7 @@ export async function runEvaluation({
         caseSignal.throwIfAborted();
         const response = await transport("/api/reviews", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: reviewHeaders,
           body: JSON.stringify({
             filename: fixture.filename,
             source: fixture.source,
@@ -314,7 +317,7 @@ export async function runEvaluation({
               : "This case did not return a valid review. Other cases can continue.",
           );
         }
-        const value: unknown = await response.json();
+        const value: unknown = await readCouncilJson(response, caseSignal);
         caseSignal.throwIfAborted();
         const report = await validateCouncil(value, fixture.source);
         caseSignal.throwIfAborted();
@@ -485,10 +488,10 @@ export async function importEvaluationJSON(
   }
   const record = (value: unknown): value is Record<string, unknown> =>
     value !== null && typeof value === "object" && !Array.isArray(value);
-  const duration = (value: unknown): value is number =>
+  const duration = (value: unknown, max = 3_600_000): value is number =>
     Number.isSafeInteger(value) &&
     (value as number) >= 0 &&
-    (value as number) <= 3_600_000;
+    (value as number) <= max;
   const diagnostic = (value: unknown): value is string | null =>
     value === null ||
     (typeof value === "string" &&
@@ -510,7 +513,16 @@ export async function importEvaluationJSON(
     !Number.isFinite(Date.parse(raw.created_at)) ||
     new Date(raw.created_at).toISOString() !== raw.created_at ||
     !["completed", "cancelled", "stopped"].includes(String(raw.status)) ||
-    !duration(raw.elapsed_ms) ||
+    !duration(
+      raw.elapsed_ms,
+      Math.max(
+        3_600_000,
+        evaluationDeadline(
+          raw.review_mode === "paired-second-review",
+          reviewDeadlines(false).client_ms,
+        ),
+      ),
+    ) ||
     !Array.isArray(raw.cases) ||
     raw.cases.length !== EVALUATION_CASES.length
   )

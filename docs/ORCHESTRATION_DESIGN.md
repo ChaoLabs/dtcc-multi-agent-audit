@@ -1,6 +1,6 @@
 # Orchestration design: independent review and targeted reconsideration
 
-The platform separates independent model evidence, peer-informed reconsideration and human validation. GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7 provide the model judgments through Amazon Bedrock. A deterministic TypeScript supervisor selects work, enforces budgets, validates evidence and consolidates reports. It uses the existing reviewers as bounded LLM tools; it adds no fourth provider or managed Bedrock Agents deployment.
+The platform separates independent model evidence, peer-informed reconsideration and human validation. GPT-6 Astra, Claude Opus 5.5 and Grok 4.7 provide the model judgments through Amazon Bedrock. A deterministic TypeScript supervisor selects work, enforces budgets, validates evidence and consolidates reports. It uses the existing reviewers as bounded LLM tools; it adds no fourth provider or managed Bedrock Agents deployment.
 
 The [three-page design brief](../apps/web/public/docs/DTCC_Orchestration_Design.pdf) is the shareable summary. The [requirements map](MUXIANG_REQUIREMENTS.md) relates the implementation to Muxiang's slides and the JEV reading. [Technical method](ORCHESTRATION.md) and [evaluation protocol](EVALUATION.md) define the detailed contracts.
 
@@ -29,6 +29,8 @@ The second pass uses `POST /api/reviews/second-round` only after the user select
 
 Peer context withholds model names, vote counts and consensus labels. It distinguishes a reviewer's own original contributions from peer claims, without instructing it to agree with a majority. Both source and peer text are untrusted data. The provider returns all twelve named slots using a stable shared schema. Assigned slots must contain judgments and unused slots must be null. After full validation, the server binds only the assigned slots to trusted original claim IDs and emits the unchanged canonical assessment array. Missing or extra slots, null assigned answers and populated unused slots fail validation; no decision is invented. A stable grammar avoids assignment-count-dependent schema compilation; it does not guarantee provider latency.
 
+Saved reports keep their original model identities. Both earlier councils (Sol / Opus / Grok and Astra / Fable / Grok) are read-only. Start a fresh first round to use Astra / Opus / Grok for a new second review; the server rejects mixed rosters.
+
 A full-baseline SHA-256 binds each second-round report to the precise first-round record, in addition to the source hash. Export validation checks the same binding. This prevents accidental mixing of runs; it is not a provider signature or proof of authenticity.
 
 ## 3. Produce one final report without erasing the path
@@ -49,15 +51,15 @@ The JSON/Markdown report includes the versioned final view (schema 1.1.0, `last-
 
 ## 4. Bound execution and preserve recoverable work
 
-Each model receives at most three attempts within one absolute 270-second deadline. Each pass has a 285-second server deadline, a 295-second browser wait and a 300-second Vercel function duration. The two passes use separate requests. HTTP 429, 500, 502, 503 and 504, a Bedrock HTTP 408 model-timeout response, or allowlisted temporary connection errors can use a remaining attempt. Both rounds may also regenerate a complete response after local format or evidence rejection. These paths share the same three-attempt total; a successful model is not rerun. Correction adds only application-authored constraints; the source, assignments, model and native schema remain unchanged. Rejected text is never echoed, and the replacement must pass every check. Provider Retry-After waits fit the remaining deadline; no attempt resets a clock. Authentication, permission, filtering, guardrails, provider JSON parsing, credential echo, unknown/permanent transport errors and local abort/timeout remain terminal. Filtering is not bypassed by rewriting input. Historical reports retain their original execution policies, and no result is relabeled as successful without an accepted response.
+Each model gets up to three attempts per round. Deadlines for model / server / browser are 660 / 720 / 745 seconds locally and 270 / 285 / 295 seconds on Vercel; the two rounds use separate requests. If AWS explicitly stops at the 32,768-token ceiling, discard the incomplete reply and regenerate at 65,536 tokens once, provided time and attempts remain. Other eligible service, connection and evidence-validation recoveries share that budget. Refusals, permission errors and cancellations are terminal. Successful peers are not rerun; a retry cannot add an independent vote.
 
 | Action | Maximum provider requests |
 | --- | --- |
 | First pass for one contract | 9 |
 | Targeted second pass | Up to 9 additional; empty assignments make no call |
 | One contract with both passes | 18 |
-| Five cases, first pass only | 45; 25-minute 5-second browser batch ceiling |
-| Five cases, paired review | 90; 49-minute 40-second browser batch ceiling |
+| Five cases, first pass only | Up to 45 calls; five browser pass budgets plus 30 seconds |
+| Five cases, paired review | Up to 90 calls; ten browser pass budgets plus 30 seconds |
 
 All models use source-span citations in both rounds. Grok receives explicit medium reasoning effort; the same limits apply, and no measured latency or accuracy improvement is asserted.
 

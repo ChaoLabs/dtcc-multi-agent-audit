@@ -144,7 +144,7 @@ story = [
         "<b>Workspace flow.</b> Run Bedrock Review, inspect Findings, then open Second Review and select Run Second Review. Final Report follows an accepted second-round result or a stated reason that no review is eligible. No second round starts automatically."
     ),
     para(
-        "GPT-6.1 Sol, Claude Opus 5.5 and Grok 4.7 provide judgments through Amazon Bedrock. A deterministic supervisor schedules their work, validates evidence and consolidates outputs. It adds no fourth model."
+        "GPT-6 Astra, Claude Opus 5.5 and Grok 4.7 provide judgments through Amazon Bedrock. A deterministic supervisor schedules their work, validates evidence and consolidates outputs. It adds no fourth model."
     ),
     para("Two iterations. Traceable assignments.", "section"),
     table(
@@ -208,10 +208,10 @@ story = [
     table(
         ["Boundary", "Enforced limit"],
         [
-            ["Model / pass", "At most 3 attempts within one absolute 270-second deadline"],
+            ["Model / pass", "Up to 3 attempts; 660 seconds locally or 270 seconds on Vercel"],
             [
                 "Server request",
-                "285 seconds; 295-second browser wait; 300-second function; separate requests per pass",
+                "720 seconds locally or 285 seconds on Vercel; separate requests per pass",
             ],
             [
                 "Second-round work",
@@ -223,7 +223,7 @@ story = [
     ),
     Spacer(1, 9),
     para(
-        "Each round allows three attempts per model, shared by temporary-error or remote-model-timeout recovery and local validation correction. Safe constraints request a complete new answer; rejected text is never echoed or accepted. Filtering, access, credential echo, provider JSON parsing and local cancellation stay terminal. Successful models are not rerun and no deadline resets."
+        "Only an explicit output-token stop can raise the allowance from 32,768 to 65,536. The incomplete reply is discarded. Service retries and evidence correction share the same remaining attempts. Cancellation, refusal and access errors are terminal. Accepted peers are never rerun."
     ),
     para(
         "Second Review uses the exact baseline; hashes are not signatures. A stable native schema avoids assignment-count changes; latency is not guaranteed. Grok uses medium effort. Keys stay in tab/request memory. Accepted AWS work may be billed; guards are not global quotas.",
@@ -232,7 +232,7 @@ story = [
     PageBreak(),
     para("Evaluate the same evidence", "title"),
     para(
-        "Keep the five original contracts fixed and pair each second round with its exact first-round baseline.",
+        "Pair each second round with its exact baseline. DAO Treasury can run separately; the five-case benchmark stays fixed.",
         "subtitle",
     ),
     table(

@@ -7,7 +7,7 @@ import {
 } from "../src/server/bedrock";
 import { BEDROCK, BEDROCK_MODELS } from "../src/lib/bedrock-config";
 import { explainReviewFailure } from "../src/lib/review-failure";
-import { validateCouncil } from "../src/lib/orchestration";
+import { validateCouncil, type CouncilReport } from "../src/lib/orchestration";
 import { REVIEW_POLICY } from "../src/lib/review-policy";
 
 const key = "bedrock-api-key-SYNTHETIC_SERVER_TEST";
@@ -22,7 +22,7 @@ const fastTiming: ReviewTiming = {
   random: () => 0,
 };
 const modelIds = [
-  "us.openai.gpt-6.1-sol",
+  "us.openai.gpt-6-astra",
   "us.anthropic.claude-opus-5-5",
   "us.xai.grok-4.7",
 ];
@@ -88,7 +88,7 @@ test("three independent requests use fixed Bedrock endpoints and never transmit 
     expect(init?.redirect).toBe("error");
     expect(init?.cache).toBe("no-store");
     const body = JSON.parse(init?.body as string);
-    expect(body.inferenceConfig).toEqual({ maxTokens: 8192 });
+    expect(body.inferenceConfig).toEqual({ maxTokens: 32_768 });
     expect(body.tools).toBeUndefined();
     expect(body.toolConfig).toBeUndefined();
     if (String(url).includes(modelIds[0])) {
@@ -553,8 +553,71 @@ for (const encoding of ["plain", "JSON-escaped"] as const) {
   });
 }
 
+for (const persistent of [false, true]) {
+  test(`only a truncated Grok response is retried with a larger allowance; persistent=${persistent}`, async () => {
+    const requests = new Map<string, string[]>();
+    const response = await handleReview(
+      request(),
+      async (url, init) => {
+        const id = String(url).split("/model/")[1].split("/")[0];
+        const attempts = requests.get(id) ?? [];
+        attempts.push(String(init?.body));
+        requests.set(id, attempts);
+        if (id !== modelIds[2]) return Response.json(payload());
+        if (persistent || attempts.length === 1) {
+          // Even well-formed JSON accompanying max_tokens is not a completed vote.
+          return Response.json(
+            payload(
+              { summary: "DISCARDED_PARTIAL", findings: [finding] },
+              "max_tokens",
+            ),
+          );
+        }
+        const valid = payload();
+        return Response.json({
+          ...valid,
+          output: {
+            message: {
+              content: [
+                {
+                  reasoningContent: {
+                    reasoningText: { text: "PRIVATE_REASONING".repeat(18_000) },
+                  },
+                },
+                ...valid.output.message.content,
+              ],
+            },
+          },
+        });
+      },
+      createLimiter(),
+      fastTiming,
+    );
+    const raw = await response.json();
+    const report = await validateCouncil(raw, source);
+    expect(report.status).toBe(persistent ? "partial" : "completed");
+    expect(report.findings).toHaveLength(0);
+    expect(modelIds.map((id) => requests.get(id)?.length)).toEqual([1, 1, 2]);
+    const [first, recovery] = requests
+      .get(modelIds[2])!
+      .map((v) => JSON.parse(v));
+    expect(first.inferenceConfig.maxTokens).toBe(32_768);
+    expect(recovery).toEqual({
+      ...first,
+      inferenceConfig: { maxTokens: 65_536 },
+    });
+    expect(report.models[2].attempts?.map((a) => a.error_code)).toEqual([
+      "output_limit",
+      persistent ? "output_limit" : null,
+    ]);
+    expect(JSON.stringify(raw)).not.toMatch(
+      /DISCARDED_PARTIAL|PRIVATE_REASONING/,
+    );
+  });
+}
+
 for (const [stopReason, diagnostic] of [
-  ["max_tokens", "output token limit"],
+  ["refusal", "declined this review"],
   ["model_context_window_exceeded", "context window"],
   ["guardrail_intervened", "guardrail interrupted"],
   ["content_filtered", "content filtering"],
@@ -597,7 +660,9 @@ for (const [stopReason, diagnostic] of [
     expect(failed.review).toBeNull();
     expect(failed.attempts).toHaveLength(1);
     const expectedCode =
-      stopReason === "content_filtered" || stopReason === "guardrail_intervened"
+      stopReason === "refusal" ||
+      stopReason === "content_filtered" ||
+      stopReason === "guardrail_intervened"
         ? stopReason
         : "incomplete";
     expect(failed.attempts[0].error_code).toBe(expectedCode);
@@ -981,7 +1046,7 @@ for (const [name, content, field] of [
 test("server bounds streamed model output even without Content-Length", async () => {
   const response = await handleReview(
     request(),
-    async () => new Response("x".repeat(256_001)),
+    async () => new Response("x".repeat(2 * 1024 * 1024 + 1)),
     createLimiter(),
     fastTiming,
   );
@@ -2014,7 +2079,11 @@ test("provider Retry-After beyond the local jitter cap is honored when it fits t
     createLimiter(),
     { ...fastTiming, retryCapMs: 5, modelTimeoutMs: 1000 },
   );
-  const report = await validateCouncil(await response.json(), source);
+  const report: CouncilReport = await response.json();
+  // Injected millisecond test deadlines must never pass as a real host profile.
+  await expect(validateCouncil(report, source)).rejects.toThrow(
+    "deadline combination",
+  );
   expect(report.status).toBe("completed");
   expect(report.execution?.total_attempts).toBe(6);
   for (const times of starts.values())
@@ -2037,7 +2106,11 @@ test("a provider delay that cannot fit the remaining model deadline never dispat
     createLimiter(),
     { ...fastTiming, retryCapMs: 5, modelTimeoutMs: 40 },
   );
-  const report = await validateCouncil(await response.json(), source);
+  const report: CouncilReport = await response.json();
+  // Injected millisecond test deadlines must never pass as a real host profile.
+  await expect(validateCouncil(report, source)).rejects.toThrow(
+    "deadline combination",
+  );
   expect(calls).toBe(3);
   expect(report.status).toBe("failed");
   expect(report.models.every((model) => model.attempts?.length === 1)).toBe(

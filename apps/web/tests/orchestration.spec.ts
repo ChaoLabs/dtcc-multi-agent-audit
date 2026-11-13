@@ -1182,9 +1182,9 @@ test("extended first-round imports reject forged late success while preserving t
     execution(),
   );
   const late = structuredClone(report);
-  late.models[0].elapsed_ms = 270_011;
-  late.models[0].attempts![0].elapsed_ms = 270_011;
-  late.elapsed_ms = 270_012;
+  late.models[0].elapsed_ms = REVIEW_POLICY.model_timeout_ms + 11;
+  late.models[0].attempts![0].elapsed_ms = REVIEW_POLICY.model_timeout_ms + 11;
+  late.elapsed_ms = REVIEW_POLICY.model_timeout_ms + 12;
   await expect(validateCouncil(late, source)).rejects.toThrow(
     "execution deadline",
   );
@@ -1216,4 +1216,32 @@ test("extended first-round imports reject forged late success while preserving t
   );
   expect(timedOut.status).toBe("partial");
   expect(timedOut.models[0].error!.code).toBe("timeout");
+});
+
+test("new first-round budgets travel across hosts; previous policy keeps its original limits and retry rules", async () => {
+  const report = await buildCouncilReport(
+    await recoveredRuns("output_limit", 500),
+    source,
+    530,
+    execution(4),
+  );
+  for (const [model_timeout_ms, overall_timeout_ms] of [
+    [270_000, 285_000],
+    [660_000, 720_000],
+  ]) {
+    Object.assign(report.execution!, { model_timeout_ms, overall_timeout_ms });
+    expect(await validateCouncil(report, source)).toEqual(report);
+  }
+  report.execution!.model_timeout_ms = 270_000;
+  await expect(validateCouncil(report, source)).rejects.toThrow(
+    "deadline combination",
+  );
+  report.execution!.policy_version = "bounded-review-v3-validation-recovery";
+  await expect(validateCouncil(report, source)).rejects.toThrow("policy");
+  report.execution!.overall_timeout_ms = 285_000;
+  await expect(validateCouncil(report, source)).rejects.toThrow(
+    "non-transient",
+  );
+  report.models[0].attempts![0].error_code = "invalid_evidence";
+  expect(await validateCouncil(report, source)).toEqual(report);
 });

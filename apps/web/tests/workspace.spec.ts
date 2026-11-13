@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import cases from "../src/generated/cases.json";
+import supplementalCases from "../src/generated/supplemental-cases.json";
 import type { ReviewFinding } from "../src/generated/review";
 import { BEDROCK, BEDROCK_MODELS } from "../src/lib/bedrock-config";
 import { buildCouncilReport, type ModelRun } from "../src/lib/orchestration";
@@ -366,11 +367,19 @@ test("upload valid file, reject oversize input, new contract", async ({
   ).toContainText("contract Contract");
 });
 
-test("all five reference contracts fit the viewport", async ({ page }) => {
+test("all reference contracts can be selected and fit the viewport", async ({
+  page,
+}) => {
   await page.goto(production);
-  for (let i = 0; i < 5; i++) {
+  for (const item of [...cases, ...supplementalCases]) {
     await page.locator(".case-trigger").click();
-    await page.locator(".case-list > button").nth(i).click();
+    await page
+      .getByRole("dialog", { name: "Reference cases" })
+      .getByRole("button", { name: new RegExp(item.title) })
+      .click();
+    await expect(
+      page.getByRole("textbox", { name: "Contract filename" }),
+    ).toHaveValue(item.report.input.filename);
     await expect(page.getByRole("button", { name: jsonButton })).toBeEnabled();
     expect(
       await page.evaluate(
@@ -470,19 +479,63 @@ test("API failures retain clearly identified static results", async ({
   await expect(
     page.getByRole("region", { name: /Findings/ }).getByRole("alert"),
   ).toContainText("Cannot reach the analysis service");
-  await expect(page.getByRole("button", { name: jsonButton })).toBeEnabled();
+  await expect(page.getByRole("button", { name: jsonButton })).toBeDisabled();
+  await expect(
+    page.getByRole("heading", { name: "No Bedrock report available" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Ready for Bedrock Review" }),
+  ).toHaveCount(0);
+  await expect(
+    page.locator(".council-model-state", { hasText: "No result" }),
+  ).toHaveCount(3);
   await expect(page.locator(".consensus-summary")).toHaveCount(0);
-  await page.locator(".findings-options > summary").click();
-  await page
-    .getByRole("group", { name: "Result source" })
-    .getByRole("button", { name: /^Static baseline/ })
-    .click();
+  await page.getByRole("button", { name: "View Static Analysis" }).click();
+  await expect(page.getByRole("button", { name: jsonButton })).toBeEnabled();
   await expect(page.locator(".finding")).toHaveCount(3);
   await expect(page.locator(".finding-origin")).toHaveText([
     "Static",
     "Static",
     "Static",
   ]);
+});
+
+test("an interrupted report is neither a clean audit nor model rejection; a new run can recover", async ({
+  page,
+}) => {
+  const { council } = await councilFixture();
+  let calls = 0;
+  await page.route("**/api/reviews", (route) =>
+    ++calls === 1
+      ? route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: " \n ",
+        })
+      : route.fulfill({ json: council }),
+  );
+  await page.goto("/");
+  await runApi(page);
+  await expect(page.getByRole("alert")).toContainText(
+    "the response ended without a report",
+  );
+  await expect(
+    page.getByRole("button", { name: "Final Report", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("heading", { name: "No candidates flagged" }),
+  ).toHaveCount(0);
+  await expect(page.locator(".council-model.failed")).toHaveCount(0);
+  expect(calls).toBe(1);
+  await page
+    .getByRole("button", { name: "Run Bedrock Review", exact: true })
+    .click();
+  await expect(page.locator(".consensus-summary")).toContainText(
+    "3 / 3 model reviews completed",
+  );
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: jsonButton })).toBeEnabled();
+  expect(calls).toBe(2);
 });
 
 test("schema-invalid API response is not accepted", async ({ page }) => {
@@ -790,7 +843,12 @@ for (const action of [
     } else {
       await expect(
         page.getByRole("button", { name: jsonButton }),
-      ).toBeEnabled();
+      ).toBeDisabled();
+      await page.locator(".findings-options > summary").click();
+      await page
+        .getByRole("group", { name: "Result source" })
+        .getByRole("button", { name: /^Static baseline/ })
+        .click();
       const result = await exportedJson(page);
       expect(result.council).toBeUndefined();
       expect(result.candidates).toHaveLength(3);

@@ -249,7 +249,7 @@ test("the final risk report includes readable rationale and actions without rewr
   expect(markdown).toContain("Latest available support: 3/3 models");
   expect(markdown).toContain("| Opinion source | Proposed severity |");
   expect(markdown).toContain(
-    "| GPT-6\\.1 Sol | reported | supported | supported | second_round | LOW |",
+    "| GPT-6 Astra | reported | supported | supported | second_round | LOW |",
   );
   expect(markdown).toContain(
     "| Grok 4\\.7 | reported | failed | supported | first_round | HIGH |",

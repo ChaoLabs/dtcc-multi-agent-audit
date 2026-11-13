@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { BEDROCK_MODELS } from "../src/lib/bedrock-config";
+import { REVIEW_POLICY } from "../src/lib/review-policy";
 import {
   invokeBedrockJson,
   RequestError,
@@ -29,6 +30,7 @@ function invoke(
   model: (typeof BEDROCK_MODELS)[number],
   transport: typeof fetch,
   signal: AbortSignal,
+  outputTokens: number = REVIEW_POLICY.initial_output_tokens,
 ) {
   return invokeBedrockJson({
     model,
@@ -36,6 +38,7 @@ function invoke(
     system: "Return JSON.",
     context: { source_lines: [{ line: 1, text: "contract C {}" }] },
     outputConfig: {},
+    outputTokens,
     signal,
     transport,
   });
@@ -52,7 +55,7 @@ function supervise(
     signal,
     overallDeadline: performance.now() + settings.overallTimeoutMs,
     timing: settings,
-    run: (modelSignal) => invoke(model, transport, modelSignal),
+    run: (modelSignal, tokens) => invoke(model, transport, modelSignal, tokens),
   });
 }
 
@@ -193,5 +196,22 @@ test("user cancellation during remote-timeout backoff starts no additional reque
   expect(result.error?.code).toBe("timeout");
   expect(result.attempts).toHaveLength(1);
   expect(result.attempts[0].error_code).toBe("bedrock_model_timeout");
+  expect(result.review).toBeNull();
+});
+
+test("output recovery and service recovery share three attempts and never shrink the recovered budget", async () => {
+  const allowances: number[] = [];
+  const result = await supervise(async (_url, init) => {
+    allowances.push(JSON.parse(String(init?.body)).inferenceConfig.maxTokens);
+    if (allowances.length === 2) return new Response(null, { status: 503 });
+    return Response.json({ stopReason: "max_tokens" });
+  });
+  expect(allowances).toEqual([32_768, 65_536, 65_536]);
+  expect(result.attempts.map((a) => a.error_code)).toEqual([
+    "output_limit",
+    "bedrock_unavailable",
+    "output_limit",
+  ]);
+  expect(result.status).toBe("failed");
   expect(result.review).toBeNull();
 });

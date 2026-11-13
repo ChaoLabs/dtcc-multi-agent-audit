@@ -1,3 +1,4 @@
+import { BEDROCK_MODELS, recordedCouncil } from "@/lib/bedrock-config";
 import type { CouncilReport } from "@/lib/orchestration";
 import {
   buildSecondReviewPlan,
@@ -18,18 +19,25 @@ export function reviewStageAvailability(
       : null;
   const hasSecondRound =
     !!baseline && secondRound?.source_sha256 === baseline.source_sha256;
-  const secondReviewAvailable = !!plan && !running;
+  const archived =
+    !!baseline && recordedCouncil(baseline.models) !== BEDROCK_MODELS;
+  const secondReviewAvailable =
+    !!plan && !running && (!archived || hasSecondRound);
   const finalReportAvailable =
-    !!baseline && !running && (hasSecondRound || !!plan?.skipped_reason);
+    !!baseline &&
+    !running &&
+    (hasSecondRound || !!plan?.skipped_reason || archived);
   const finalReportReason = hasSecondRound
     ? "The report combines first-round findings and second-round judgments."
-    : plan?.skipped_reason === "insufficient_reviewers"
-      ? "Second Review requires at least two completed model reviews. The Final Report contains the available first-round findings."
-      : plan?.skipped_reason === "no_disagreements"
-        ? "No findings require Second Review. The Final Report contains the first-round findings."
-        : plan?.skipped_reason === "no_eligible_assignments"
-          ? "No eligible model assignments remain for Second Review. The Final Report preserves the available findings and unresolved coverage."
-          : "Run Second Review to add the assigned models’ judgments to the Final Report.";
+    : archived
+      ? "This report preserves findings from an earlier model council. Start a new Bedrock Review to use the current models."
+      : plan?.skipped_reason === "insufficient_reviewers"
+        ? "Second Review requires at least two completed model reviews. The Final Report contains the available first-round findings."
+        : plan?.skipped_reason === "no_disagreements"
+          ? "No findings require Second Review. The Final Report contains the first-round findings."
+          : plan?.skipped_reason === "no_eligible_assignments"
+            ? "No eligible model assignments remain for Second Review. The Final Report preserves the available findings and unresolved coverage."
+            : "Run Second Review to add the assigned models’ judgments to the Final Report.";
   return {
     plan,
     secondReviewAvailable,

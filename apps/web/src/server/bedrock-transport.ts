@@ -407,7 +407,7 @@ async function badRequestDiagnostic(
 
 function incompleteDiagnostic(stopReason: unknown): string {
   // Exact allowlist only: upstream reason text may contain private data. Keep
-  // these failures terminal; a stop reason is not a transient HTTP failure.
+  // all provider stop text private; only explicit max_tokens permits a larger-budget replay.
   switch (stopReason) {
     case "max_tokens":
       return "AWS stop reason: max_tokens. The model reached its output token limit before completing the review.";
@@ -415,6 +415,8 @@ function incompleteDiagnostic(stopReason: unknown): string {
       return "AWS stop reason: model_context_window_exceeded. The model exceeded its context window; review the input size and model context limits.";
     case "guardrail_intervened":
       return "AWS stop reason: guardrail_intervened. A Bedrock guardrail interrupted the review.";
+    case "refusal":
+      return "AWS stop reason: refusal. The model declined this review.";
     case "content_filtered":
       return "AWS stop reason: content_filtered. Bedrock reported content filtering and did not complete the review.";
     case "malformed_model_output":
@@ -437,6 +439,7 @@ export async function invokeBedrockJson({
   system,
   context,
   outputConfig,
+  outputTokens,
   signal,
   transport,
 }: {
@@ -445,6 +448,7 @@ export async function invokeBedrockJson({
   system: string;
   context: unknown;
   outputConfig: unknown;
+  outputTokens: number;
   signal: AbortSignal;
   transport: typeof fetch;
 }) {
@@ -465,9 +469,9 @@ export async function invokeBedrockJson({
         messages: [
           { role: "user", content: [{ text: JSON.stringify(context) }] },
         ],
-        inferenceConfig: { maxTokens: REVIEW_POLICY.max_output_tokens },
+        inferenceConfig: { maxTokens: outputTokens },
         outputConfig,
-        ...(model.id === "us.openai.gpt-6.1-sol"
+        ...(model.id === "us.openai.gpt-6-astra"
           ? {
               additionalModelRequestFields: {
                 text: { format: { strict: true } },
@@ -564,7 +568,9 @@ export async function invokeBedrockJson({
 
   let raw: string;
   try {
-    raw = await readBounded(response.body, 256_000, signal);
+    // Allow room for reasoning blocks as well as the final JSON. This cap
+    // applies only to the provider envelope, never to requests or audit records.
+    raw = await readBounded(response.body, 2 * 1024 * 1024, signal);
   } catch (error) {
     // Incoming request bodies and report validation never use this recovery
     // classification: it applies only to reading an outbound AWS response.
@@ -584,12 +590,20 @@ export async function invokeBedrockJson({
     );
   }
 
+  if (object(payload) && payload.stopReason === "max_tokens")
+    throw new RequestError(
+      `${model.label} did not complete the review. ${incompleteDiagnostic("max_tokens")} No partial result was accepted.`,
+      502,
+      "output_limit",
+      outputTokens < REVIEW_POLICY.max_output_tokens,
+    );
   if (!object(payload) || payload.stopReason !== "end_turn")
     throw new RequestError(
       `${model.label} did not complete the review. ${incompleteDiagnostic(object(payload) ? payload.stopReason : undefined)} No partial result was accepted.`,
       502,
       object(payload) &&
-        (payload.stopReason === "content_filtered" ||
+        (payload.stopReason === "refusal" ||
+          payload.stopReason === "content_filtered" ||
           payload.stopReason === "guardrail_intervened")
         ? payload.stopReason
         : "incomplete",
@@ -643,7 +657,7 @@ export async function runBoundedModel<T extends { elapsed_ms: number }>({
   signal: AbortSignal;
   overallDeadline: number;
   timing: ReviewTiming;
-  run: (signal: AbortSignal) => Promise<T>;
+  run: (signal: AbortSignal, outputTokens: number) => Promise<T>;
 }): Promise<{
   model_id: string;
   label: string;
@@ -672,6 +686,7 @@ export async function runBoundedModel<T extends { elapsed_ms: number }>({
       ),
     );
   let retryDelay = 0;
+  let outputTokens: number = REVIEW_POLICY.initial_output_tokens;
   let failure = timeoutError();
   try {
     for (
@@ -683,7 +698,7 @@ export async function runBoundedModel<T extends { elapsed_ms: number }>({
         throw timeoutError();
       const attemptStart = performance.now();
       try {
-        const review = await run(modelSignal);
+        const review = await run(modelSignal, outputTokens);
         if (modelSignal.aborted || performance.now() >= deadline)
           throw timeoutError();
         attempts.push({
@@ -728,6 +743,10 @@ export async function runBoundedModel<T extends { elapsed_ms: number }>({
           number === REVIEW_POLICY.max_attempts_per_model
         )
           break;
+        if (failure.code === "output_limit") {
+          if (outputTokens >= REVIEW_POLICY.max_output_tokens) break;
+          outputTokens = REVIEW_POLICY.max_output_tokens;
+        }
         const jitter = Math.min(
           timing.retryCapMs,
           Math.ceil(
